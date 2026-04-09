@@ -42,6 +42,7 @@ export interface SecurityInfo {
   tpm_ready?: boolean;
   tpm_enabled?: boolean;
   tpm_activated?: boolean;
+  tpm_managed_auth_level?: number;
   bitlocker_mount_point?: string;
   bitlocker_cipher?: number;
   bitlocker_volume_status?: number;

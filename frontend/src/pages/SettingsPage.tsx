@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { settingsService } from "../services/settings";
 import { formatDateTime } from "../utils";
+import type { BlobSettings } from "../types";
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -46,7 +47,7 @@ export default function SettingsPage() {
     },
   });
 
-  const handleLoad = (s: typeof settings extends Array<infer T> ? T : never) => {
+  const handleLoad = (s: BlobSettings) => {
     if (!s) return;
     setForm({
       name: s.name,
