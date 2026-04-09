@@ -1,0 +1,243 @@
+from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from app.db.models import (
+    Endpoint, EndpointSnapshot, EndpointHardware, EndpointSecurity,
+    EndpointNetworkAdapter, EndpointDisk, InstalledSoftware, DataSource, InventoryFile,
+)
+from app.services.hardware_parser_service import parse_hardware_json
+from app.services.software_parser_service import parse_software_json
+from app.services.software_normalization_service import (
+    normalize_name, normalize_publisher, compute_dedupe_hash, classify_software
+)
+from app.services import blob_storage_service as bss
+from app.core.security import decrypt_value
+from app.core.logging import logger
+
+
+def _get_or_create_endpoint(db: Session, endpoint_data: dict) -> Endpoint:
+    computer_name = endpoint_data["computer_name"]
+    endpoint_key = computer_name.upper()
+    ep = db.query(Endpoint).filter_by(endpoint_key=endpoint_key).first()
+    if not ep:
+        ep = Endpoint(endpoint_key=endpoint_key, computer_name=computer_name)
+        db.add(ep)
+        db.flush()
+    for field in ["serial_number", "smbios_uuid", "manufacturer", "model", "system_sku",
+                  "firmware_type", "bios_version", "bios_release_date", "install_date"]:
+        val = endpoint_data.get(field)
+        if val is not None:
+            setattr(ep, field, val)
+    if endpoint_data.get("last_seen_at"):
+        if not ep.last_seen_at or endpoint_data["last_seen_at"] > ep.last_seen_at:
+            ep.last_seen_at = endpoint_data["last_seen_at"]
+    return ep
+
+
+def ingest_hardware_file(db: Session, inv_file: InventoryFile, raw: bytes) -> None:
+    try:
+        parsed = parse_hardware_json(raw)
+    except Exception as e:
+        inv_file.status = "error"
+        inv_file.error_message = f"Parse error: {e}"
+        db.flush()
+        return
+
+    ep = _get_or_create_endpoint(db, parsed["endpoint"])
+
+    snapshot_at = parsed["snapshot_at"] or datetime.now(timezone.utc)
+    snapshot = db.query(EndpointSnapshot).filter_by(
+        endpoint_id=ep.id, hardware_file_id=inv_file.id
+    ).first()
+    if not snapshot:
+        db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).update({"is_current": False})
+        snapshot = EndpointSnapshot(
+            endpoint_id=ep.id,
+            snapshot_at=snapshot_at,
+            registry_date=parsed["registry_date"],
+            hardware_file_id=inv_file.id,
+            is_current=True,
+        )
+        db.add(snapshot)
+        db.flush()
+
+    if not db.query(EndpointHardware).filter_by(snapshot_id=snapshot.id).first():
+        hw = EndpointHardware(snapshot_id=snapshot.id, **parsed["hardware"])
+        db.add(hw)
+
+    if not db.query(EndpointSecurity).filter_by(snapshot_id=snapshot.id).first():
+        sec = EndpointSecurity(snapshot_id=snapshot.id, **parsed["security"])
+        db.add(sec)
+
+    db.query(EndpointNetworkAdapter).filter_by(snapshot_id=snapshot.id).delete()
+    for na_data in parsed["network_adapters"]:
+        db.add(EndpointNetworkAdapter(snapshot_id=snapshot.id, **na_data))
+
+    db.query(EndpointDisk).filter_by(snapshot_id=snapshot.id).delete()
+    for disk_data in parsed["disks"]:
+        db.add(EndpointDisk(snapshot_id=snapshot.id, **disk_data))
+
+    inv_file.status = "processed"
+    inv_file.processed_at = datetime.now(timezone.utc)
+    db.flush()
+
+
+def ingest_software_file(db: Session, inv_file: InventoryFile, raw: bytes, snapshot: EndpointSnapshot) -> None:
+    try:
+        entries = parse_software_json(raw)
+    except Exception as e:
+        inv_file.status = "error"
+        inv_file.error_message = f"Parse error: {e}"
+        db.flush()
+        return
+
+    db.query(InstalledSoftware).filter_by(snapshot_id=snapshot.id).delete()
+
+    seen_hashes: set[str] = set()
+    for entry in entries:
+        classification = classify_software(entry)
+        norm_name = normalize_name(entry.get("software_name"))
+        norm_pub = normalize_publisher(entry.get("publisher"))
+        dedupe_hash = compute_dedupe_hash(snapshot.id, entry.get("software_name"), entry.get("software_version"), entry.get("app_source"))
+
+        if dedupe_hash in seen_hashes:
+            continue
+        seen_hashes.add(dedupe_hash)
+
+        sw = InstalledSoftware(
+            snapshot_id=snapshot.id,
+            endpoint_id=snapshot.endpoint_id,
+            software_name=entry.get("software_name"),
+            software_version=entry.get("software_version"),
+            publisher=entry.get("publisher"),
+            install_date=entry.get("install_date"),
+            architecture=entry.get("architecture"),
+            app_type=entry.get("app_type"),
+            app_source=entry.get("app_source"),
+            app_scope=entry.get("app_scope"),
+            managed_device_id=entry.get("managed_device_id"),
+            managed_device_name=entry.get("managed_device_name"),
+            uninstall_string=entry.get("uninstall_string"),
+            uninstall_reg_path=entry.get("uninstall_reg_path"),
+            system_component=entry.get("system_component"),
+            windows_installer=entry.get("windows_installer"),
+            package_full_name=entry.get("package_full_name"),
+            package_family_name=entry.get("package_family_name"),
+            install_location=entry.get("install_location"),
+            is_framework=entry.get("is_framework"),
+            is_resource_package=entry.get("is_resource_package"),
+            is_bundle=entry.get("is_bundle"),
+            is_development_mode=entry.get("is_development_mode"),
+            is_non_removable=entry.get("is_non_removable"),
+            signature_kind=entry.get("signature_kind"),
+            normalized_name=norm_name,
+            normalized_publisher=norm_pub,
+            dedupe_hash=dedupe_hash,
+            is_current=True,
+        )
+        db.add(sw)
+
+    snapshot.software_file_id = inv_file.id
+    inv_file.status = "processed"
+    inv_file.processed_at = datetime.now(timezone.utc)
+    db.flush()
+
+
+def run_sync(db: Session, data_source: DataSource) -> dict:
+    try:
+        sas_token = decrypt_value(data_source.sas_token_encrypted or "")
+    except Exception as e:
+        msg = f"SAS token decryption failed (key mismatch or not set): {e}"
+        data_source.last_sync_status = "error"
+        data_source.last_error = msg
+        db.commit()
+        return {"error": msg}
+
+    stats = {"total": 0, "processed": 0, "errors": 0, "skipped": 0}
+
+    try:
+        blobs = bss.list_blobs(
+            data_source.account_url,
+            sas_token,
+            data_source.container_name,
+            data_source.blob_prefix or "",
+        )
+    except Exception as e:
+        data_source.last_sync_status = "error"
+        data_source.last_error = str(e)
+        db.commit()
+        return {"error": str(e)}
+
+    for blob in blobs:
+        if blob.file_type not in ("hardware", "software"):
+            continue
+        stats["total"] += 1
+
+        existing = db.query(InventoryFile).filter_by(
+            data_source_id=data_source.id, blob_name=blob.name, etag=blob.etag
+        ).first()
+        if existing and existing.status == "processed":
+            stats["skipped"] += 1
+            continue
+
+        if not existing:
+            inv_file = InventoryFile(
+                data_source_id=data_source.id,
+                blob_name=blob.name,
+                file_type=blob.file_type,
+                endpoint_name=blob.endpoint_name,
+                blob_last_modified=blob.last_modified,
+                etag=blob.etag,
+                status="pending",
+            )
+            db.add(inv_file)
+            db.flush()
+        else:
+            inv_file = existing
+            inv_file.status = "pending"
+
+        try:
+            raw = bss.download_blob_json(data_source.account_url, sas_token, data_source.container_name, blob.name)
+        except Exception as e:
+            inv_file.status = "error"
+            inv_file.error_message = str(e)
+            stats["errors"] += 1
+            db.flush()
+            continue
+
+        try:
+            with db.begin_nested():
+                if blob.file_type == "hardware":
+                    ingest_hardware_file(db, inv_file, raw)
+                elif blob.file_type == "software":
+                    ep = db.query(Endpoint).filter_by(endpoint_key=(blob.endpoint_name or "").upper()).first()
+                    if ep:
+                        snapshot = db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).first()
+                        if snapshot:
+                            ingest_software_file(db, inv_file, raw, snapshot)
+                        else:
+                            inv_file.status = "error"
+                            inv_file.error_message = "No current snapshot found for endpoint"
+                    else:
+                        inv_file.status = "error"
+                        inv_file.error_message = f"Endpoint {blob.endpoint_name} not found — process hardware first"
+        except Exception as e:
+            inv_file.status = "error"
+            inv_file.error_message = f"Ingest error: {e}"
+            logger.error(f"Failed to ingest blob {blob.name}: {e}")
+
+        if inv_file.status == "processed":
+            stats["processed"] += 1
+        else:
+            stats["errors"] += 1
+
+    db.commit()
+
+    data_source.last_sync_at = datetime.now(timezone.utc)
+    data_source.last_sync_status = "success" if stats["errors"] == 0 else "partial"
+    if stats["errors"] > 0:
+        data_source.last_error = f"{stats['errors']} file(s) failed"
+    else:
+        data_source.last_error = None
+    db.commit()
+
+    return stats
