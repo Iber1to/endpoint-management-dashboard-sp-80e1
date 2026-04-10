@@ -1,11 +1,12 @@
 import re
 from fastapi import APIRouter, Depends, HTTPException
+from app.core.auth import require_admin
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models.software import SoftwareComplianceRule
 from app.schemas.software import SoftwareComplianceRuleCreate, SoftwareComplianceRuleOut
 
-router = APIRouter(prefix="/rules", tags=["rules"])
+router = APIRouter(prefix="/rules", tags=["rules"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/software", response_model=list[SoftwareComplianceRuleOut])

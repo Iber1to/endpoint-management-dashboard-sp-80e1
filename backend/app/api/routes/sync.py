@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from app.core.auth import require_operator, require_read
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models.datasource import DataSource, InventoryFile
@@ -11,7 +12,11 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 @router.post("/run", response_model=SyncRunResponse)
-def run_sync_now(db: Session = Depends(get_db), data_source_id: int | None = None):
+def run_sync_now(
+    db: Session = Depends(get_db),
+    data_source_id: int | None = None,
+    _auth=Depends(require_operator),
+):
     q = db.query(DataSource).filter_by(is_active=True)
     if data_source_id:
         q = q.filter_by(id=data_source_id)
@@ -21,45 +26,45 @@ def run_sync_now(db: Session = Depends(get_db), data_source_id: int | None = Non
         raise HTTPException(status_code=404, detail="No active data sources found")
 
     all_stats: dict = {"total": 0, "processed": 0, "errors": 0, "skipped": 0}
-    source_errors: list[str] = []
+    failed_sources: list[str] = []
 
     for source in sources:
         try:
             logger.info(f"Syncing source {source.name}")
             stats = run_sync(db, source)
             if "error" in stats:
-                source_errors.append(f"[{source.name}] {stats['error']}")
+                logger.warning("Sync failed for source %s: %s", source.name, stats["error"])
+                failed_sources.append(source.name)
             for k in all_stats:
                 all_stats[k] += stats.get(k, 0)
-        except Exception as e:
+        except Exception:
             logger.exception(f"Inventory sync failed for source {source.name}")
-            source_errors.append(f"[{source.name}] {e}")
+            failed_sources.append(source.name)
 
-    evaluation_error = None
-    evaluation_ran = False
+    evaluation_failed = False
 
     if all_stats.get("processed", 0) > 0:
         try:
             logger.info("Starting update evaluation after inventory sync")
             evaluate_all_updates(db)
-            evaluation_ran = True
-        except Exception as e:
+        except Exception:
             logger.exception("Update evaluation failed after inventory sync")
-            evaluation_error = str(e)
+            evaluation_failed = True
 
-    if source_errors or evaluation_error:
+    if failed_sources or evaluation_failed:
         parts = []
-        if source_errors:
-            parts.append("; ".join(source_errors))
-        if evaluation_error:
-            parts.append(f"[evaluation] {evaluation_error}")
+        if failed_sources:
+            unique_sources = ", ".join(sorted(set(failed_sources)))
+            parts.append(f"Sources failed: {unique_sources}")
+        if evaluation_failed:
+            parts.append("Post-sync update evaluation failed")
         return SyncRunResponse(success=False, stats=all_stats, error="; ".join(parts))
 
     return SyncRunResponse(success=True, stats=all_stats)
 
 
 @router.get("/status", response_model=list[SyncStatusResponse])
-def get_sync_status(db: Session = Depends(get_db)):
+def get_sync_status(db: Session = Depends(get_db), _auth=Depends(require_read)):
     sources = db.query(DataSource).all()
     return [
         SyncStatusResponse(
@@ -78,7 +83,8 @@ def list_inventory_files(
     db: Session = Depends(get_db),
     data_source_id: int | None = None,
     status: str | None = None,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=1000),
+    _auth=Depends(require_read),
 ):
     q = db.query(InventoryFile)
     if data_source_id:

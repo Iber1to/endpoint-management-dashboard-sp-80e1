@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
+from app.core.auth import require_operator, require_read
 from app.db.session import get_db
 from app.db.models import WindowsUpdateStatus, WindowsPatchReference, Endpoint
 from app.schemas.updates import UpdateComplianceResponse, UpdateComplianceSummary, UpdateStatusOut, PatchReferenceOut
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/updates", tags=["updates"])
 
 
 @router.get("/compliance", response_model=UpdateComplianceResponse)
-def get_update_compliance(db: Session = Depends(get_db)):
+def get_update_compliance(db: Session = Depends(get_db), _auth=Depends(require_read)):
     statuses = (
         db.query(WindowsUpdateStatus)
         .options(joinedload(WindowsUpdateStatus.endpoint))
@@ -63,6 +64,7 @@ def get_patch_catalog(
     db: Session = Depends(get_db),
     windows_version: str | None = None,
     latest_only: bool = False,
+    _auth=Depends(require_read),
 ):
     q = db.query(WindowsPatchReference)
     if windows_version:
@@ -74,7 +76,7 @@ def get_patch_catalog(
 
 
 @router.get("/catalog/status")
-def get_catalog_status(db: Session = Depends(get_db)):
+def get_catalog_status(db: Session = Depends(get_db), _auth=Depends(require_read)):
     total = db.query(WindowsPatchReference).count()
     latest = db.query(WindowsPatchReference).order_by(WindowsPatchReference.scraped_at.desc()).first()
     return {
@@ -85,7 +87,7 @@ def get_catalog_status(db: Session = Depends(get_db)):
 
 
 @router.post("/catalog/sync")
-def trigger_catalog_sync(db: Session = Depends(get_db)):
+def trigger_catalog_sync(db: Session = Depends(get_db), _auth=Depends(require_operator)):
     try:
         logger.info("Starting manual patch catalog sync")
         sync_result = sync_patch_catalog(db)
@@ -106,16 +108,17 @@ def trigger_catalog_sync(db: Session = Depends(get_db)):
 
 
 @router.post("/evaluate")
-def trigger_update_evaluation(db: Session = Depends(get_db)):
+def trigger_update_evaluation(db: Session = Depends(get_db), _auth=Depends(require_operator)):
     try:
         result = evaluate_all_updates(db)
         return {"success": True, "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Manual update evaluation failed")
+        raise HTTPException(status_code=500, detail="Update evaluation failed")
 
 
 @router.get("/overview")
-def get_updates_overview(db: Session = Depends(get_db)):
+def get_updates_overview(db: Session = Depends(get_db), _auth=Depends(require_read)):
     total = db.query(WindowsUpdateStatus).count()
     by_status = db.query(
         WindowsUpdateStatus.compliance_status,

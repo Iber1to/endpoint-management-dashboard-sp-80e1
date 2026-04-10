@@ -12,8 +12,14 @@ class Settings(BaseSettings):
 
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://frontend"]
 
+    ADMIN_API_KEY: str = ""
+    OPERATOR_API_KEY: str = ""
+    READONLY_API_KEY: str = ""
+
     PATCH_CATALOG_SYNC_INTERVAL_MINUTES: int = 1440
     INVENTORY_SYNC_INTERVAL_MINUTES: int = 60
+    SCHEDULER_ENABLED: bool = True
+    SCHEDULER_LOCK_KEY: int = 81317077
 
 
 settings = Settings()

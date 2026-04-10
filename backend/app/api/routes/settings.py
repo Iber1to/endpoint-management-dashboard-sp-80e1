@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from app.core.auth import require_admin
+from app.core.logging import logger
 from app.db.session import get_db
 from app.db.models.datasource import DataSource
 from app.schemas.settings import BlobSettingsCreate, BlobSettingsOut, BlobTestRequest, BlobTestResponse
 from app.services import blob_storage_service as bss
 from app.core.security import encrypt_value, mask_token
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
 
 def _to_out(ds: DataSource) -> BlobSettingsOut:
@@ -34,8 +36,9 @@ def get_blob_settings(db: Session = Depends(get_db)):
 def create_or_update_blob_settings(payload: BlobSettingsCreate, db: Session = Depends(get_db)):
     try:
         encrypted_token = encrypt_value(payload.sas_token)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except RuntimeError:
+        logger.exception("Failed to encrypt SAS token while saving blob settings")
+        raise HTTPException(status_code=500, detail="Server encryption is not configured correctly")
 
     hint = mask_token(payload.sas_token)
     existing = db.query(DataSource).filter_by(name=payload.name).first()
@@ -77,4 +80,7 @@ def test_blob_connection(payload: BlobTestRequest):
         payload.container_name,
         payload.blob_prefix or "",
     )
+    if not result.get("success") and result.get("error"):
+        logger.warning("Blob connection test failed: %s", result["error"])
+        result["error"] = "Could not connect to Azure Blob Storage with the provided settings"
     return BlobTestResponse(**result)

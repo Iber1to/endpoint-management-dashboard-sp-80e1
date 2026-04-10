@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select
+from sqlalchemy import func
 from typing import Optional
 from app.db.session import get_db
 from app.db.models import Endpoint, EndpointSnapshot, EndpointHardware, EndpointSecurity, WindowsUpdateStatus, InstalledSoftware
@@ -26,7 +26,44 @@ def list_endpoints(
     windows_version: Optional[str] = None,
     patch_status: Optional[str] = None,
 ):
-    q = db.query(Endpoint)
+    current_snapshot_sub = (
+        db.query(
+            EndpointSnapshot.endpoint_id.label("endpoint_id"),
+            func.max(EndpointSnapshot.id).label("snapshot_id"),
+        )
+        .filter(EndpointSnapshot.is_current == True)  # noqa: E712
+        .group_by(EndpointSnapshot.endpoint_id)
+        .subquery()
+    )
+    latest_eval_sub = (
+        db.query(
+            WindowsUpdateStatus.endpoint_id.label("endpoint_id"),
+            func.max(WindowsUpdateStatus.evaluated_at).label("max_eval"),
+        )
+        .group_by(WindowsUpdateStatus.endpoint_id)
+        .subquery()
+    )
+    q = (
+        db.query(
+            Endpoint,
+            EndpointHardware.os_name,
+            EndpointHardware.windows_version,
+            EndpointHardware.full_build,
+            EndpointSecurity.bitlocker_protection_status,
+            EndpointSecurity.tpm_present,
+            WindowsUpdateStatus.compliance_status,
+        )
+        .outerjoin(current_snapshot_sub, current_snapshot_sub.c.endpoint_id == Endpoint.id)
+        .outerjoin(EndpointSnapshot, EndpointSnapshot.id == current_snapshot_sub.c.snapshot_id)
+        .outerjoin(EndpointHardware, EndpointHardware.snapshot_id == EndpointSnapshot.id)
+        .outerjoin(EndpointSecurity, EndpointSecurity.snapshot_id == EndpointSnapshot.id)
+        .outerjoin(latest_eval_sub, latest_eval_sub.c.endpoint_id == Endpoint.id)
+        .outerjoin(
+            WindowsUpdateStatus,
+            (WindowsUpdateStatus.endpoint_id == latest_eval_sub.c.endpoint_id)
+            & (WindowsUpdateStatus.evaluated_at == latest_eval_sub.c.max_eval),
+        )
+    )
     if search:
         q = q.filter(Endpoint.computer_name.ilike(f"%{search}%"))
     if manufacturer:
@@ -34,56 +71,27 @@ def list_endpoints(
     if model:
         q = q.filter(Endpoint.model.ilike(f"%{model}%"))
     if windows_version:
-        win_ver_sub = (
-            db.query(EndpointSnapshot.endpoint_id)
-            .join(EndpointHardware, EndpointHardware.snapshot_id == EndpointSnapshot.id)
-            .filter(EndpointSnapshot.is_current == True, EndpointHardware.windows_version == windows_version)  # noqa: E712
-            .subquery()
-        )
-        q = q.filter(Endpoint.id.in_(win_ver_sub))
+        q = q.filter(EndpointHardware.windows_version == windows_version)
     if patch_status:
-        latest_eval_sub = (
-            db.query(
-                WindowsUpdateStatus.endpoint_id,
-                func.max(WindowsUpdateStatus.evaluated_at).label("max_eval"),
-            )
-            .group_by(WindowsUpdateStatus.endpoint_id)
-            .subquery()
-        )
-        patch_status_sub = (
-            db.query(WindowsUpdateStatus.endpoint_id)
-            .join(
-                latest_eval_sub,
-                (WindowsUpdateStatus.endpoint_id == latest_eval_sub.c.endpoint_id)
-                & (WindowsUpdateStatus.evaluated_at == latest_eval_sub.c.max_eval),
-            )
-            .filter(WindowsUpdateStatus.compliance_status == patch_status)
-            .subquery()
-        )
-        q = q.filter(Endpoint.id.in_(patch_status_sub))
+        q = q.filter(WindowsUpdateStatus.compliance_status == patch_status)
 
-    total = q.count()
-    endpoints_page = q.offset((page - 1) * page_size).limit(page_size).all()
+    total = q.with_entities(func.count(func.distinct(Endpoint.id))).scalar() or 0
+    endpoints_page = q.order_by(Endpoint.computer_name.asc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
-    for ep in endpoints_page:
-        snap = _get_current_snapshot(db, ep.id)
-        hw = snap.hardware if snap else None
-        sec = snap.security if snap else None
-        update_status = db.query(WindowsUpdateStatus).filter_by(endpoint_id=ep.id).order_by(WindowsUpdateStatus.evaluated_at.desc()).first()
-
+    for ep, os_name, endpoint_windows_version, full_build, bitlocker_status, tpm_present, compliance_status in endpoints_page:
         items.append(EndpointListItem(
             id=ep.id,
             computer_name=ep.computer_name,
             manufacturer=ep.manufacturer,
             model=ep.model,
-            os_name=hw.os_name if hw else None,
-            windows_version=hw.windows_version if hw else None,
-            full_build=hw.full_build if hw else None,
+            os_name=os_name,
+            windows_version=endpoint_windows_version,
+            full_build=full_build,
             last_seen_at=ep.last_seen_at,
-            bitlocker_protection_status=sec.bitlocker_protection_status if sec else None,
-            tpm_present=sec.tpm_present if sec else None,
-            patch_compliance_status=update_status.compliance_status if update_status else None,
+            bitlocker_protection_status=bitlocker_status,
+            tpm_present=tpm_present,
+            patch_compliance_status=compliance_status,
         ))
 
     return EndpointListResponse(items=items, total=total, page=page, page_size=page_size)
