@@ -1,9 +1,11 @@
 import re
 from datetime import datetime, timezone, date
 from typing import Optional
+
 import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.orm import Session
+
 from app.db.models.updates import WindowsPatchReference
 from app.core.logging import logger
 
@@ -15,9 +17,24 @@ _MONTH_MAP = {
     "september": "09", "october": "10", "november": "11", "december": "12",
 }
 
+_VERSION_BLOCK_RE = re.compile(
+    r"Version\s+([0-9]{2}H[12])\s+\(OS build\s+(\d{5})\)(.*?)(?=Version\s+[0-9]{2}H[12]\s+\(OS build\s+\d{5}\)|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_ROW_RE = re.compile(
+    r"^(?P<release_channel>.+?)\s+"
+    r"(?:(?P<update_type>\d{4}-\d{2}(?:\s+(?:B|D|OOB))?)\s+)?"
+    r"(?P<availability_date>\d{4}-\d{2}-\d{2})\s+"
+    r"(?P<full_build>\d{5}\.\d+)"
+    r"(?:\s+(?P<kb_article>KB\d{6,8}))?$",
+    re.IGNORECASE,
+)
+
 
 def _parse_release_date(text: str) -> Optional[date]:
     text = (text or "").strip()
+
     m = re.search(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", text)
     if m:
         month_name, day, year = m.group(1).lower(), int(m.group(2)), int(m.group(3))
@@ -44,20 +61,12 @@ def _date_to_patch_month(d: Optional[date]) -> Optional[str]:
     return d.strftime("%Y-%m")
 
 
-def _extract_kb(text: str) -> Optional[str]:
-    m = re.search(r"KB\s*(\d{6,8})", text, re.IGNORECASE)
-    return f"KB{m.group(1)}" if m else None
-
-
-def _infer_windows_version(os_build: str) -> Optional[str]:
-    version_map = {
-        "22000": "21H2",
-        "22621": "22H2",
-        "22631": "23H2",
-        "26100": "24H2",
-        "26200": "25H2",
-    }
-    return version_map.get(os_build)
+def _patch_month_from_update_type(text: str) -> Optional[str]:
+    text = (text or "").strip()
+    m = re.search(r"(\d{4})-(\d{2})", text)
+    if not m:
+        return None
+    return f"{m.group(1)}-{m.group(2)}"
 
 
 def _dedupe_entries(entries: list[dict]) -> list[dict]:
@@ -70,11 +79,19 @@ def _dedupe_entries(entries: list[dict]) -> list[dict]:
         if not full_build:
             continue
 
-        # Si no hay KB, usamos full_build como clave de respaldo para no repetir filas idénticas
         dedupe_key = (full_build, kb_article or "__NO_KB__")
         unique[dedupe_key] = e
 
     return list(unique.values())
+
+
+def _normalize_text(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    text = soup.get_text(" ", strip=True)
+    text = text.replace("\xa0", " ")
+    text = text.replace("•", " • ")
+    text = re.sub(r"\s+", " ", text)
+    return text
 
 
 def fetch_patch_catalog() -> list[dict]:
@@ -87,60 +104,73 @@ def fetch_patch_catalog() -> list[dict]:
         logger.error(f"Failed to fetch Windows patch catalog: {e}")
         return []
 
-    soup = BeautifulSoup(html, "lxml")
-    entries = []
+    text = _normalize_text(html)
 
-    for table in soup.find_all("table"):
-        headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
-        if not any("build" in h for h in headers):
-            continue
+    marker = "Windows 11 release history"
+    start_idx = text.find(marker)
+    if start_idx == -1:
+        logger.warning("Release history section not found in Microsoft Learn page")
+        return []
 
-        col_build = next((i for i, h in enumerate(headers) if "build" in h), None)
-        col_kb = next((i for i, h in enumerate(headers) if "kb" in h), None)
-        col_date = next((i for i, h in enumerate(headers) if "date" in h or "availab" in h), None)
+    release_history_text = text[start_idx:]
 
-        if col_build is None:
-            continue
+    version_block_re = re.compile(
+        r"Version\s+([0-9]{2}H[12])\s+\(OS build\s+(\d{5})\)\s+"
+        r"Servicing option\s+Update type\s+Availability date\s+Build\s+KB article\s+"
+        r"(.*?)"
+        r"(?=Version\s+[0-9]{2}H[12]\s+\(OS build\s+\d{5}\)|$)",
+        re.IGNORECASE | re.DOTALL,
+    )
 
-        for row in table.find_all("tr")[1:]:
-            cells = row.find_all(["td", "th"])
-            max_idx = max(i for i in [col_build, col_kb, col_date] if i is not None)
-            if len(cells) <= max_idx:
+    row_re = re.compile(
+        r"(?P<release_channel>.+?)\s+"
+        r"(?:(?P<update_type>\d{4}-\d{2}(?:\s+(?:B|D|OOB))?)\s+)?"
+        r"(?P<availability_date>\d{4}-\d{2}-\d{2})\s+"
+        r"(?P<full_build>\d{5}\.\d+)"
+        r"(?:\s+(?P<kb_article>KB\d{6,8}))?",
+        re.IGNORECASE,
+    )
+
+    entries: list[dict] = []
+
+    for block_match in version_block_re.finditer(release_history_text):
+        windows_version = block_match.group(1).upper()
+        heading_os_build = block_match.group(2)
+        block_text = block_match.group(3)
+
+        for row_match in row_re.finditer(block_text):
+            full_build = row_match.group("full_build")
+            os_build, os_revision_str = full_build.split(".", 1)
+
+            if os_build != heading_os_build:
                 continue
 
-            build_text = cells[col_build].get_text(strip=True)
-            m = re.match(r"(\d{5})\.(\d+)", build_text)
-            if not m:
-                continue
+            os_revision = int(os_revision_str)
+            update_type = row_match.group("update_type")
+            availability_date_text = row_match.group("availability_date")
+            kb_article = row_match.group("kb_article")
+            release_channel = row_match.group("release_channel").strip()
 
-            os_build = m.group(1)
-            os_revision = int(m.group(2))
-            full_build = f"{os_build}.{os_revision}"
+            release_date = _parse_release_date(availability_date_text)
+            patch_month = _patch_month_from_update_type(update_type) or _date_to_patch_month(release_date)
 
-            kb_text = cells[col_kb].get_text(strip=True) if col_kb is not None and col_kb < len(cells) else ""
-            kb_article = _extract_kb(kb_text) or _extract_kb(build_text)
-
-            date_text = cells[col_date].get_text(strip=True) if col_date is not None and col_date < len(cells) else ""
-            release_date = _parse_release_date(date_text)
-            patch_month = _date_to_patch_month(release_date)
-
-            windows_version = _infer_windows_version(os_build)
+            is_preview = bool(update_type and re.search(r"\bD\b", update_type, re.IGNORECASE))
 
             entries.append({
                 "product_name": "Windows 11",
                 "windows_version": windows_version,
-                "release_channel": None,
+                "release_channel": release_channel or None,
                 "os_build": os_build,
                 "os_revision": os_revision,
                 "full_build": full_build,
                 "kb_article": kb_article,
                 "patch_month": patch_month,
-                "patch_label": f"{patch_month} Update" if patch_month else None,
+                "patch_label": update_type or (f"{patch_month} Update" if patch_month else None),
                 "release_date": release_date,
                 "source_url": MS_LEARN_URL,
                 "source_type": "microsoft_learn",
                 "is_security_update": True,
-                "is_preview": "preview" in build_text.lower() or "preview" in kb_text.lower(),
+                "is_preview": is_preview,
             })
 
     logger.info(f"Fetched {len(entries)} patch entries from Microsoft Learn")
@@ -165,22 +195,14 @@ def sync_patch_catalog(db: Session) -> dict:
         build_groups.setdefault(key, []).append(e)
 
     for group in build_groups.values():
-        non_preview = [e for e in group if not e.get("is_preview")]
-        if non_preview:
-            latest = max(non_preview, key=lambda x: x["os_revision"])
-            for e in group:
-                e["is_latest_for_branch"] = (
-                    e["full_build"] == latest["full_build"] and not e.get("is_preview", False)
-                )
-        else:
-            for e in group:
-                e["is_latest_for_branch"] = False
+        latest = max(group, key=lambda x: x["os_revision"])
+        for e in group:
+            e["is_latest_for_branch"] = (e["full_build"] == latest["full_build"])
 
     try:
         affected_branches = list({
             (e.get("windows_version"), e.get("os_build"))
             for e in entries
-            if not e.get("is_preview")
         })
 
         for wv, ob in affected_branches:
