@@ -2,6 +2,7 @@ from azure.storage.blob import BlobServiceClient, ContainerClient
 from azure.core.exceptions import AzureError
 from dataclasses import dataclass
 from typing import Optional
+from itertools import islice
 import re
 
 
@@ -42,13 +43,35 @@ def get_container_client(account_url: str, sas_token: str, container_name: str) 
 def test_connection(account_url: str, sas_token: str, container_name: str, blob_prefix: str = "") -> dict:
     try:
         container = get_container_client(account_url, sas_token, container_name)
-        blobs = list(container.list_blobs(name_starts_with=blob_prefix or None, max_results=10))
-        sample = [b.name for b in blobs[:5]]
-        return {"success": True, "containers_visible": True, "sample_blobs": sample, "error": None}
+
+        sample = [
+            b.name
+            for b in islice(
+                container.list_blobs(name_starts_with=blob_prefix or None),
+                5
+            )
+        ]
+
+        return {
+            "success": True,
+            "containers_visible": True,
+            "sample_blobs": sample,
+            "error": None,
+        }
     except AzureError as e:
-        return {"success": False, "containers_visible": False, "sample_blobs": [], "error": str(e)}
+        return {
+            "success": False,
+            "containers_visible": False,
+            "sample_blobs": [],
+            "error": str(e),
+        }
     except Exception as e:
-        return {"success": False, "containers_visible": False, "sample_blobs": [], "error": str(e)}
+        return {
+            "success": False,
+            "containers_visible": False,
+            "sample_blobs": [],
+            "error": str(e),
+        }
 
 
 def list_blobs(account_url: str, sas_token: str, container_name: str, blob_prefix: str = "") -> list[BlobInfo]:
@@ -56,15 +79,17 @@ def list_blobs(account_url: str, sas_token: str, container_name: str, blob_prefi
     result = []
     for blob in container.list_blobs(name_starts_with=blob_prefix or None):
         file_type, endpoint_name, snapshot_ts = _classify_blob(blob.name)
-        result.append(BlobInfo(
-            name=blob.name,
-            last_modified=blob.last_modified,
-            etag=blob.etag,
-            size=blob.size,
-            file_type=file_type,
-            endpoint_name=endpoint_name,
-            snapshot_ts=snapshot_ts,
-        ))
+        result.append(
+            BlobInfo(
+                name=blob.name,
+                last_modified=blob.last_modified,
+                etag=blob.etag,
+                size=blob.size,
+                file_type=file_type,
+                endpoint_name=endpoint_name,
+                snapshot_ts=snapshot_ts,
+            )
+        )
     return result
 
 

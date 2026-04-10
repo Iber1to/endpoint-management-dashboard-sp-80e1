@@ -1,6 +1,10 @@
-from sqlalchemy import String, Boolean, Integer, DateTime, Text, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from __future__ import annotations
+
 from datetime import datetime
+
+from sqlalchemy import String, Text, Boolean, Integer, DateTime, ForeignKey, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.db.base import Base
 
 
@@ -23,14 +27,21 @@ class DataSource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    inventory_files: Mapped[list["InventoryFile"]] = relationship(back_populates="data_source", cascade="all, delete-orphan")
+    inventory_files: Mapped[list["InventoryFile"]] = relationship(
+        back_populates="data_source",
+        cascade="all, delete-orphan",
+    )
 
 
 class InventoryFile(Base):
     __tablename__ = "inventory_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    data_source_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    data_source_id: Mapped[int] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     blob_name: Mapped[str] = mapped_column(Text, index=True)
     file_type: Mapped[str | None] = mapped_column(String(50))
     endpoint_name: Mapped[str | None] = mapped_column(String(255), index=True)
