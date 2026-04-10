@@ -1,0 +1,68 @@
+name: Feature request
+description: Proponer una mejora funcional
+title: "[Feature] "
+labels:
+  - type:feature
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sync
+        - Settings
+        - Endpoints
+        - Software
+        - Windows Updates
+        - Patch Catalog
+        - Infra/DevOps
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Prioridad
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema actual
+      description: Que duele hoy y por que hay que cambiarlo.
+      placeholder: Describe el problema concreto.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta de solucion
+      placeholder: Describe como deberia funcionar.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Criterios de aceptacion
+      description: Lista de checks verificables para cerrar la issue.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Plan minimo de validacion
+      placeholder: Pruebas manuales y/o automatizadas para confirmar el resultado.
+    validations:
+      required: true

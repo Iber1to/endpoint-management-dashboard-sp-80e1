@@ -1,0 +1,51 @@
+name: Technical task
+description: Tarea interna de mantenimiento o deuda tecnica
+title: "[Task] "
+labels:
+  - type:task
+body:
+  - type: input
+    id: scope
+    attributes:
+      label: Alcance
+      placeholder: Modulo/archivo/sistema afectado
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Prioridad
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: true
+
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objetivo
+      placeholder: Que resultado concreto esperamos.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actions
+    attributes:
+      label: Acciones
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definicion de hecho
+      placeholder: Criterios exactos para cerrar la tarea.
+    validations:
+      required: true
