@@ -13,6 +13,7 @@ export default function SyncJobsPage() {
   const qc = useQueryClient();
   const [runError, setRunError] = useState<string | null>(null);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
+  const [forceRun, setForceRun] = useState(false);
 
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
@@ -33,7 +34,7 @@ export default function SyncJobsPage() {
   });
 
   const runSyncMutation = useMutation({
-    mutationFn: () => syncService.runSync(),
+    mutationFn: () => syncService.runSync({ force: forceRun }),
     onMutate: () => {
       setRunError(null);
       setRetryAfterSeconds(null);
@@ -95,17 +96,36 @@ export default function SyncJobsPage() {
     return "text-gray-600 bg-gray-100";
   };
 
+  const formatSnapshotRange = (run: SyncExecution) => {
+    const from = run.stats.snapshot_id_from;
+    const to = run.stats.snapshot_id_to;
+    if (!from || !to) return "--";
+    if (from === to) return `#${from}`;
+    return `#${from}-#${to}`;
+  };
+
   return (
     <div className="p-8 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-800">Sync Jobs</h1>
-        <button
-          onClick={() => runSyncMutation.mutate()}
-          disabled={runSyncMutation.isPending || isRunInProgress}
-          className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
-        >
-          {isRunInProgress ? "Sync running..." : runSyncMutation.isPending ? "Starting..." : "Run Sync Now"}
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          <button
+            onClick={() => runSyncMutation.mutate()}
+            disabled={runSyncMutation.isPending || isRunInProgress}
+            className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {isRunInProgress ? "Sync running..." : runSyncMutation.isPending ? "Starting..." : "Run Sync Now"}
+          </button>
+          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={forceRun}
+              onChange={(e) => setForceRun(e.target.checked)}
+              disabled={isRunInProgress || runSyncMutation.isPending}
+            />
+            Test mode: bypass 8h guardrail for this manual run
+          </label>
+        </div>
       </div>
 
       {runSyncMutation.isSuccess && (
@@ -138,6 +158,9 @@ export default function SyncJobsPage() {
             <Kpi label="Errores" value={currentRun.stats.errors} />
             <Kpi label="Omitidos" value={currentRun.stats.skipped} />
           </div>
+          <p className="text-xs text-gray-600">
+            Snapshots creados: {currentRun.stats.snapshots_created ?? 0} ({formatSnapshotRange(currentRun)})
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
             <TypeBox
               title="Hardware"
@@ -153,8 +176,8 @@ export default function SyncJobsPage() {
             />
           </div>
           <p className="text-xs text-gray-500">
-            Started: {formatDateTime(currentRun.started_at)} · Finished: {formatDateTime(currentRun.finished_at)} ·
-            Duration: {currentRun.duration_seconds ? `${Math.round(currentRun.duration_seconds)}s` : "—"}
+            Started: {formatDateTime(currentRun.started_at)} | Finished: {formatDateTime(currentRun.finished_at)} |
+            Duration: {currentRun.duration_seconds ? `${Math.round(currentRun.duration_seconds)}s` : "--"}
           </p>
           {currentRun.message && <p className="text-xs text-gray-600">{currentRun.message}</p>}
         </div>
@@ -189,14 +212,14 @@ export default function SyncJobsPage() {
           {latestCompletedRun && (
             <span className="text-xs text-gray-500">
               Last duration:{" "}
-              {latestCompletedRun.duration_seconds ? `${Math.round(latestCompletedRun.duration_seconds)}s` : "—"}
+              {latestCompletedRun.duration_seconds ? `${Math.round(latestCompletedRun.duration_seconds)}s` : "--"}
             </span>
           )}
         </div>
         <table className="min-w-full text-sm divide-y divide-gray-100">
           <thead className="bg-gray-50">
             <tr>
-              {["Requested", "Status", "Descubiertos", "Procesados", "Errores", "Duracion", "Resultado"].map((h) => (
+              {["Requested", "Status", "Descubiertos", "Procesados", "Errores", "Snapshots", "Duracion", "Resultado"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">
                   {h}
                 </th>
@@ -215,10 +238,11 @@ export default function SyncJobsPage() {
                 <td className="px-4 py-2">{run.stats.total}</td>
                 <td className="px-4 py-2">{run.stats.processed}</td>
                 <td className="px-4 py-2">{run.stats.errors}</td>
+                <td className="px-4 py-2 text-xs text-gray-600">{formatSnapshotRange(run)}</td>
                 <td className="px-4 py-2 text-xs text-gray-500">
-                  {run.duration_seconds ? `${Math.round(run.duration_seconds)}s` : "—"}
+                  {run.duration_seconds ? `${Math.round(run.duration_seconds)}s` : "--"}
                 </td>
-                <td className="px-4 py-2 text-xs text-gray-600">{run.message || "—"}</td>
+                <td className="px-4 py-2 text-xs text-gray-600">{run.message || "--"}</td>
               </tr>
             ))}
           </tbody>
@@ -260,3 +284,4 @@ function TypeBox({
     </div>
   );
 }
+

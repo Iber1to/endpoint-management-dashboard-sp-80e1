@@ -4,6 +4,18 @@ import { settingsService } from "../services/settings";
 import { formatDateTime } from "../utils";
 import type { BlobSettings } from "../types";
 
+const DEFAULT_FORM = {
+  name: "default",
+  account_url: "",
+  container_name: "",
+  sas_token: "",
+  blob_prefix: "",
+  sync_frequency_minutes: 1440,
+  max_files_per_run: 50000,
+  max_files_per_run_enabled: false,
+  is_active: true,
+};
+
 export default function SettingsPage() {
   const qc = useQueryClient();
   const { data: settings } = useQuery({
@@ -11,18 +23,7 @@ export default function SettingsPage() {
     queryFn: () => settingsService.getBlobSettings(),
   });
 
-  const [form, setForm] = useState({
-    name: "default",
-    account_url: "",
-    container_name: "",
-    sas_token: "",
-    blob_prefix: "",
-    sync_frequency_minutes: 1440,
-    max_files_per_run: 50000,
-    max_files_per_run_enabled: false,
-    is_active: true,
-  });
-
+  const [form, setForm] = useState(DEFAULT_FORM);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; blobs?: string[] } | null>(null);
 
   const saveMutation = useMutation({
@@ -46,6 +47,18 @@ export default function SettingsPage() {
         message: data.success ? "Connection successful!" : `Failed: ${data.error}`,
         blobs: data.sample_blobs,
       });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (sourceId: number) => settingsService.deleteBlobSettings(sourceId),
+    onSuccess: (_, deletedSourceId) => {
+      qc.invalidateQueries({ queryKey: ["blob-settings"] });
+      const deleted = settings?.find((s) => s.id === deletedSourceId);
+      if (deleted && form.name === deleted.name) {
+        setForm(DEFAULT_FORM);
+      }
+      setTestResult(null);
     },
   });
 
@@ -76,15 +89,32 @@ export default function SettingsPage() {
               <div>
                 <p className="font-medium text-gray-800">{s.name}</p>
                 <p className="text-sm text-gray-500">{s.account_url} / {s.container_name}</p>
-                <p className="text-xs text-gray-400">Token: {s.sas_token_masked} · Last sync: {formatDateTime(s.last_sync_at)} · Status: {s.last_sync_status || "—"}</p>
+                <p className="text-xs text-gray-400">
+                  Token: {s.sas_token_masked} | Last sync: {formatDateTime(s.last_sync_at)} | Status: {s.last_sync_status || "--"}
+                </p>
                 {s.last_error && <p className="text-xs text-red-500">{s.last_error}</p>}
               </div>
-              <button
-                className="text-sm text-blue-600 hover:underline"
-                onClick={() => handleLoad(s as Parameters<typeof handleLoad>[0])}
-              >
-                Load
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={() => handleLoad(s as Parameters<typeof handleLoad>[0])}
+                >
+                  Load
+                </button>
+                <button
+                  className="text-sm text-red-600 hover:underline disabled:opacity-40"
+                  disabled={deleteMutation.isPending}
+                  onClick={() => {
+                    const shouldDelete = window.confirm(
+                      `Delete source "${s.name}"? This will remove its saved token and settings.`
+                    );
+                    if (!shouldDelete) return;
+                    deleteMutation.mutate(s.id);
+                  }}
+                >
+                  {deleteMutation.isPending ? "Deleting..." : "Delete"}
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -95,10 +125,30 @@ export default function SettingsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <FormField label="Source Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
-          <FormField label="Storage Account URL" value={form.account_url} onChange={(v) => setForm({ ...form, account_url: v })} placeholder="https://youraccount.blob.core.windows.net" />
-          <FormField label="Container Name" value={form.container_name} onChange={(v) => setForm({ ...form, container_name: v })} />
-          <FormField label="SAS Token" value={form.sas_token} onChange={(v) => setForm({ ...form, sas_token: v })} type="password" placeholder="sv=2020-...&sp=rl&..." />
-          <FormField label="Blob Prefix (optional)" value={form.blob_prefix} onChange={(v) => setForm({ ...form, blob_prefix: v })} placeholder="folder/subfolder/" />
+          <FormField
+            label="Storage Account URL"
+            value={form.account_url}
+            onChange={(v) => setForm({ ...form, account_url: v })}
+            placeholder="https://youraccount.blob.core.windows.net"
+          />
+          <FormField
+            label="Container Name"
+            value={form.container_name}
+            onChange={(v) => setForm({ ...form, container_name: v })}
+          />
+          <FormField
+            label="SAS Token"
+            value={form.sas_token}
+            onChange={(v) => setForm({ ...form, sas_token: v })}
+            type="password"
+            placeholder="sv=2020-...&sp=rl&..."
+          />
+          <FormField
+            label="Blob Prefix (optional)"
+            value={form.blob_prefix}
+            onChange={(v) => setForm({ ...form, blob_prefix: v })}
+            placeholder="folder/subfolder/"
+          />
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Sync Frequency (minutes)</label>
             <input
@@ -141,17 +191,30 @@ export default function SettingsPage() {
 
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} className="rounded" />
+            <input
+              type="checkbox"
+              checked={form.is_active}
+              onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
+              className="rounded"
+            />
             Active
           </label>
         </div>
 
         {testResult && (
-          <div className={`rounded-lg px-4 py-3 text-sm ${testResult.success ? "bg-green-50 border border-green-200 text-green-800" : "bg-red-50 border border-red-200 text-red-800"}`}>
+          <div
+            className={`rounded-lg px-4 py-3 text-sm ${
+              testResult.success
+                ? "bg-green-50 border border-green-200 text-green-800"
+                : "bg-red-50 border border-red-200 text-red-800"
+            }`}
+          >
             <p>{testResult.message}</p>
             {testResult.blobs && testResult.blobs.length > 0 && (
               <ul className="mt-2 space-y-0.5">
-                {testResult.blobs.map((b) => <li key={b} className="font-mono text-xs">· {b}</li>)}
+                {testResult.blobs.map((b) => (
+                  <li key={b} className="font-mono text-xs">- {b}</li>
+                ))}
               </ul>
             )}
           </div>
@@ -174,19 +237,21 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        {saveMutation.isSuccess && (
-          <p className="text-sm text-green-700">Settings saved successfully.</p>
-        )}
-        {saveMutation.isError && (
-          <p className="text-sm text-red-700">Failed to save settings.</p>
-        )}
+        {saveMutation.isSuccess && <p className="text-sm text-green-700">Settings saved successfully.</p>}
+        {saveMutation.isError && <p className="text-sm text-red-700">Failed to save settings.</p>}
+        {deleteMutation.isSuccess && <p className="text-sm text-green-700">Source deleted successfully.</p>}
+        {deleteMutation.isError && <p className="text-sm text-red-700">Failed to delete source.</p>}
       </div>
     </div>
   );
 }
 
 function FormField({
-  label, value, onChange, type = "text", placeholder,
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
 }: {
   label: string;
   value: string;

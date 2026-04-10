@@ -18,9 +18,13 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 @router.post("/run", response_model=SyncRunResponse)
 def run_sync_now(
     data_source_id: int | None = None,
+    force: bool = Query(default=False, description="Bypass minimum manual sync interval guardrail"),
     _auth=Depends(require_operator),
 ):
-    run, error_message, retry_after_seconds = start_sync_run(data_source_id=data_source_id)
+    run, error_message, retry_after_seconds = start_sync_run(
+        data_source_id=data_source_id,
+        force=force,
+    )
     if run:
         return SyncRunResponse(
             accepted=True,

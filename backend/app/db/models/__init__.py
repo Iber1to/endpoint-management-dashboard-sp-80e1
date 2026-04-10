@@ -11,6 +11,7 @@ from app.db.models.software import (
 )
 from app.db.models.updates import WindowsPatchReference, WindowsUpdateStatus
 from app.db.models.datasource import DataSource, InventoryFile
+from app.db.models.sync_run import SyncRun
 
 __all__ = [
     "Endpoint",
@@ -28,4 +29,5 @@ __all__ = [
     "WindowsUpdateStatus",
     "DataSource",
     "InventoryFile",
+    "SyncRun",
 ]

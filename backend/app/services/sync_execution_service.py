@@ -1,49 +1,78 @@
 from __future__ import annotations
 
-from collections import deque
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from threading import Lock, Thread
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import func
+
 from app.core.logging import logger
-from app.db.models.datasource import DataSource
+from app.db.models import DataSource, EndpointSnapshot, SyncRun
 from app.db.session import SessionLocal
 from app.services.inventory_ingestion_service import run_sync
 from app.services.windows_update_evaluation_service import evaluate_all_updates
 
 MIN_MANUAL_SYNC_INTERVAL = timedelta(hours=8)
-_HISTORY_LIMIT = 30
 
 _state_lock = Lock()
-_runs: deque[dict[str, Any]] = deque(maxlen=_HISTORY_LIMIT)
 _active_run_id: str | None = None
+_incomplete_runs_reconciled = False
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _new_run_payload(data_source_id: int | None) -> dict[str, Any]:
+def _default_stats() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "processed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "snapshots_created": 0,
+        "snapshot_id_from": None,
+        "snapshot_id_to": None,
+        "by_type": {
+            "hardware": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+            "software": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+        },
+    }
+
+
+def _normalize_stats(stats: dict[str, Any] | None) -> dict[str, Any]:
+    merged = _default_stats()
+    if not stats:
+        return merged
+
+    for key in ("total", "processed", "errors", "skipped", "snapshots_created"):
+        if key in stats:
+            merged[key] = int(stats.get(key) or 0)
+
+    merged["snapshot_id_from"] = stats.get("snapshot_id_from")
+    merged["snapshot_id_to"] = stats.get("snapshot_id_to")
+
+    by_type = stats.get("by_type") or {}
+    for file_type in ("hardware", "software"):
+        source = by_type.get(file_type) or {}
+        for key in ("discovered", "processed", "errors", "skipped"):
+            merged["by_type"][file_type][key] = int(source.get(key) or 0)
+
+    return merged
+
+
+def _new_run_payload(data_source_id: int | None, force: bool) -> dict[str, Any]:
     return {
         "run_id": uuid4().hex,
         "data_source_id": data_source_id,
+        "force": force,
         "status": "queued",
         "requested_at": _utcnow(),
         "started_at": None,
         "finished_at": None,
         "duration_seconds": None,
-        "stats": {
-            "total": 0,
-            "processed": 0,
-            "errors": 0,
-            "skipped": 0,
-            "by_type": {
-                "hardware": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
-                "software": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
-            },
-        },
+        "stats": _default_stats(),
         "sources_total": 0,
         "sources_failed": [],
         "evaluation_failed": False,
@@ -55,26 +84,99 @@ def _copy_run(run: dict[str, Any]) -> dict[str, Any]:
     return deepcopy(run)
 
 
-def _get_run_ref(run_id: str) -> dict[str, Any] | None:
-    for run in _runs:
-        if run["run_id"] == run_id:
-            return run
-    return None
+def _db_row_to_payload(row: SyncRun) -> dict[str, Any]:
+    return {
+        "run_id": row.run_id,
+        "data_source_id": row.data_source_id,
+        "force": row.force,
+        "status": row.status,
+        "requested_at": row.requested_at,
+        "started_at": row.started_at,
+        "finished_at": row.finished_at,
+        "duration_seconds": row.duration_seconds,
+        "stats": _normalize_stats(row.stats_json or {}),
+        "sources_total": row.sources_total,
+        "sources_failed": list(row.sources_failed_json or []),
+        "evaluation_failed": row.evaluation_failed,
+        "message": row.message,
+    }
+
+
+def _persist_run_payload(run: dict[str, Any]) -> None:
+    with SessionLocal() as db:
+        row = db.query(SyncRun).filter_by(run_id=run["run_id"]).first()
+        if not row:
+            row = SyncRun(run_id=run["run_id"])
+            db.add(row)
+
+        row.data_source_id = run.get("data_source_id")
+        row.force = bool(run.get("force", False))
+        row.status = run.get("status") or "queued"
+        row.requested_at = run.get("requested_at") or _utcnow()
+        row.started_at = run.get("started_at")
+        row.finished_at = run.get("finished_at")
+        row.duration_seconds = run.get("duration_seconds")
+        row.stats_json = _normalize_stats(run.get("stats") or {})
+        row.sources_total = int(run.get("sources_total") or 0)
+        row.sources_failed_json = list(run.get("sources_failed") or [])
+        row.evaluation_failed = bool(run.get("evaluation_failed", False))
+        row.message = run.get("message")
+        db.commit()
+
+
+def _load_run_payload(run_id: str) -> dict[str, Any] | None:
+    with SessionLocal() as db:
+        row = db.query(SyncRun).filter_by(run_id=run_id).first()
+        return _db_row_to_payload(row) if row else None
+
+
+def _reconcile_incomplete_runs_once() -> None:
+    global _incomplete_runs_reconciled
+
+    with _state_lock:
+        if _incomplete_runs_reconciled:
+            return
+        _incomplete_runs_reconciled = True
+
+    with SessionLocal() as db:
+        stale_runs = db.query(SyncRun).filter(SyncRun.status.in_(["queued", "running"])).all()
+        if not stale_runs:
+            return
+
+        now = _utcnow()
+        for run in stale_runs:
+            run.status = "failed"
+            run.finished_at = now
+            if run.started_at:
+                run.duration_seconds = max((now - run.started_at).total_seconds(), 0.0)
+            run.message = "Sync execution interrupted by backend restart"
+        db.commit()
 
 
 def get_active_run() -> dict[str, Any] | None:
-    with _state_lock:
-        if not _active_run_id:
-            return None
-        run = _get_run_ref(_active_run_id)
-        return _copy_run(run) if run else None
+    _reconcile_incomplete_runs_once()
+
+    with SessionLocal() as db:
+        if _active_run_id:
+            row = db.query(SyncRun).filter_by(run_id=_active_run_id).first()
+            if row and row.status in ("queued", "running"):
+                return _db_row_to_payload(row)
+
+        row = (
+            db.query(SyncRun)
+            .filter(SyncRun.status.in_(["queued", "running"]))
+            .order_by(SyncRun.requested_at.desc())
+            .first()
+        )
+        return _db_row_to_payload(row) if row else None
 
 
 def list_runs(limit: int = 10) -> list[dict[str, Any]]:
-    with _state_lock:
-        runs = list(_runs)[-limit:]
-        runs.reverse()
-        return [_copy_run(r) for r in runs]
+    _reconcile_incomplete_runs_once()
+
+    with SessionLocal() as db:
+        rows = db.query(SyncRun).order_by(SyncRun.requested_at.desc()).limit(limit).all()
+        return [_db_row_to_payload(r) for r in rows]
 
 
 def _compute_retry_after_seconds(last_sync_at: datetime) -> int:
@@ -95,8 +197,13 @@ def _find_interval_blocked_sources(sources: list[DataSource]) -> tuple[list[str]
     return blocked, retry_after
 
 
-def start_sync_run(data_source_id: int | None = None) -> tuple[dict[str, Any] | None, str | None, int | None]:
+def start_sync_run(
+    data_source_id: int | None = None,
+    force: bool = False,
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
     global _active_run_id
+
+    _reconcile_incomplete_runs_once()
 
     with _state_lock:
         if _active_run_id:
@@ -110,14 +217,18 @@ def start_sync_run(data_source_id: int | None = None) -> tuple[dict[str, Any] | 
             if not sources:
                 return None, "No active data sources found", None
 
-            blocked_sources, retry_after_seconds = _find_interval_blocked_sources(sources)
-            if blocked_sources:
-                blocked_list = ", ".join(sorted(blocked_sources))
-                return None, f"Minimum interval not reached for: {blocked_list}", retry_after_seconds
+            if not force:
+                blocked_sources, retry_after_seconds = _find_interval_blocked_sources(sources)
+                if blocked_sources:
+                    blocked_list = ", ".join(sorted(blocked_sources))
+                    return None, f"Minimum interval not reached for: {blocked_list}", retry_after_seconds
 
-        run = _new_run_payload(data_source_id=data_source_id)
-        _runs.append(run)
+        run = _new_run_payload(data_source_id=data_source_id, force=force)
+        _persist_run_payload(run)
         _active_run_id = run["run_id"]
+
+    if force:
+        logger.warning("Manual sync guardrail bypass requested (run_id=%s)", run["run_id"])
 
     worker = Thread(target=_execute_sync_run, args=(run["run_id"],), daemon=True)
     worker.start()
@@ -137,12 +248,16 @@ def _mark_finished(run: dict[str, Any], status: str, message: str | None = None)
 def _execute_sync_run(run_id: str) -> None:
     global _active_run_id
 
-    with _state_lock:
-        run = _get_run_ref(run_id)
-        if not run:
-            return
-        run["status"] = "running"
-        run["started_at"] = _utcnow()
+    run = _load_run_payload(run_id)
+    if not run:
+        with _state_lock:
+            if _active_run_id == run_id:
+                _active_run_id = None
+        return
+
+    run["status"] = "running"
+    run["started_at"] = _utcnow()
+    _persist_run_payload(run)
 
     try:
         with SessionLocal() as db:
@@ -150,13 +265,12 @@ def _execute_sync_run(run_id: str) -> None:
             if run["data_source_id"]:
                 q = q.filter_by(id=run["data_source_id"])
             sources = q.all()
+            max_snapshot_before = db.query(func.max(EndpointSnapshot.id)).scalar() or 0
             run["sources_total"] = len(sources)
 
             if not sources:
-                with _state_lock:
-                    run_ref = _get_run_ref(run_id)
-                    if run_ref:
-                        _mark_finished(run_ref, "failed", "No active data sources found")
+                _mark_finished(run, "failed", "No active data sources found")
+                _persist_run_payload(run)
                 return
 
             all_stats = run["stats"]
@@ -190,27 +304,34 @@ def _execute_sync_run(run_id: str) -> None:
                     logger.exception("Update evaluation failed after inventory sync (run_id=%s)", run_id)
                     evaluation_failed = True
 
-            with _state_lock:
-                run_ref = _get_run_ref(run_id)
-                if not run_ref:
-                    return
-                run_ref["sources_failed"] = sorted(set(failed_sources))
-                run_ref["evaluation_failed"] = evaluation_failed
-                if failed_sources or evaluation_failed:
-                    message_parts: list[str] = []
-                    if failed_sources:
-                        message_parts.append(f"Sources failed: {', '.join(sorted(set(failed_sources)))}")
-                    if evaluation_failed:
-                        message_parts.append("Post-sync update evaluation failed")
-                    _mark_finished(run_ref, "partial", "; ".join(message_parts))
-                else:
-                    _mark_finished(run_ref, "success", "Sync execution completed successfully")
+            max_snapshot_after = db.query(func.max(EndpointSnapshot.id)).scalar() or 0
+            snapshots_created = max(max_snapshot_after - max_snapshot_before, 0)
+            all_stats["snapshots_created"] = snapshots_created
+            all_stats["snapshot_id_from"] = (max_snapshot_before + 1) if snapshots_created > 0 else None
+            all_stats["snapshot_id_to"] = max_snapshot_after if snapshots_created > 0 else None
+
+            run["sources_failed"] = sorted(set(failed_sources))
+            run["evaluation_failed"] = evaluation_failed
+            has_file_errors = int(all_stats.get("errors", 0)) > 0
+
+            if failed_sources or evaluation_failed or has_file_errors:
+                message_parts: list[str] = []
+                if failed_sources:
+                    message_parts.append(f"Sources failed: {', '.join(sorted(set(failed_sources)))}")
+                if has_file_errors:
+                    message_parts.append(f"{all_stats['errors']} file(s) failed")
+                if evaluation_failed:
+                    message_parts.append("Post-sync update evaluation failed")
+                _mark_finished(run, "partial", "; ".join(message_parts))
+            else:
+                _mark_finished(run, "success", "Sync execution completed successfully")
+
+            _persist_run_payload(run)
     except Exception:
         logger.exception("Sync execution crashed unexpectedly (run_id=%s)", run_id)
-        with _state_lock:
-            run_ref = _get_run_ref(run_id)
-            if run_ref:
-                _mark_finished(run_ref, "failed", "Unexpected sync execution failure")
+        run = _load_run_payload(run_id) or run
+        _mark_finished(run, "failed", "Unexpected sync execution failure")
+        _persist_run_payload(run)
     finally:
         with _state_lock:
             if _active_run_id == run_id:

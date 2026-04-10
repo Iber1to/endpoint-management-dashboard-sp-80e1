@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from collections import Counter
 from sqlalchemy.orm import Session
 from app.db.models import (
     Endpoint, EndpointSnapshot, EndpointHardware, EndpointSecurity,
@@ -12,6 +13,30 @@ from app.services.software_normalization_service import (
 from app.services import blob_storage_service as bss
 from app.core.security import decrypt_value
 from app.core.logging import logger
+
+INCREMENTAL_LOOKBACK_MINUTES = 5
+
+
+def _to_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _compute_incremental_cutoff(last_sync_at: datetime | None) -> datetime | None:
+    normalized_last_sync = _to_utc(last_sync_at)
+    if normalized_last_sync is None:
+        return None
+    return normalized_last_sync - timedelta(minutes=INCREMENTAL_LOOKBACK_MINUTES)
+
+
+def _is_blob_new_for_incremental(blob_last_modified: datetime | None, cutoff: datetime) -> bool:
+    normalized_blob_time = _to_utc(blob_last_modified)
+    if normalized_blob_time is None:
+        return True
+    return normalized_blob_time >= cutoff
 
 
 def _get_or_create_endpoint(db: Session, endpoint_data: dict) -> Endpoint:
@@ -33,16 +58,52 @@ def _get_or_create_endpoint(db: Session, endpoint_data: dict) -> Endpoint:
     return ep
 
 
+def _normalize_endpoint_name(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _resolve_software_endpoint_name(entries: list[dict]) -> str | None:
+    candidates: list[str] = []
+    for entry in entries:
+        computer_name = _normalize_endpoint_name(entry.get("computer_name"))
+        managed_device_name = _normalize_endpoint_name(entry.get("managed_device_name"))
+        if computer_name:
+            candidates.append(computer_name)
+            continue
+        if managed_device_name:
+            candidates.append(managed_device_name)
+
+    if not candidates:
+        return None
+
+    counts = Counter(name.upper() for name in candidates)
+    most_common_key, _ = counts.most_common(1)[0]
+    for original in candidates:
+        if original.upper() == most_common_key:
+            return original
+    return candidates[0]
+
+
 def ingest_hardware_file(db: Session, inv_file: InventoryFile, raw: bytes) -> None:
     try:
         parsed = parse_hardware_json(raw)
     except Exception as e:
-        inv_file.status = "error"
-        inv_file.error_message = f"Parse error: {e}"
+        _set_inventory_file_error(inv_file, f"Parse error: {e}")
         db.flush()
         return
 
     ep = _get_or_create_endpoint(db, parsed["endpoint"])
+    content_endpoint_name = _normalize_endpoint_name(parsed["endpoint"].get("computer_name"))
+    filename_endpoint_name = _normalize_endpoint_name(inv_file.endpoint_name)
+    if content_endpoint_name:
+        inv_file.endpoint_name = content_endpoint_name
+    if filename_endpoint_name and content_endpoint_name and filename_endpoint_name.upper() != content_endpoint_name.upper():
+        logger.warning(
+            "Endpoint mismatch in hardware file %s: filename=%s content=%s",
+            inv_file.blob_name,
+            filename_endpoint_name,
+            content_endpoint_name,
+        )
 
     snapshot_at = parsed["snapshot_at"] or datetime.now(timezone.utc)
     snapshot = db.query(EndpointSnapshot).filter_by(
@@ -81,15 +142,7 @@ def ingest_hardware_file(db: Session, inv_file: InventoryFile, raw: bytes) -> No
     db.flush()
 
 
-def ingest_software_file(db: Session, inv_file: InventoryFile, raw: bytes, snapshot: EndpointSnapshot) -> None:
-    try:
-        entries = parse_software_json(raw)
-    except Exception as e:
-        inv_file.status = "error"
-        inv_file.error_message = f"Parse error: {e}"
-        db.flush()
-        return
-
+def ingest_software_file(db: Session, inv_file: InventoryFile, entries: list[dict], snapshot: EndpointSnapshot) -> None:
     db.query(InstalledSoftware).filter_by(snapshot_id=snapshot.id).delete()
 
     seen_hashes: set[str] = set()
@@ -146,6 +199,13 @@ def _set_inventory_file_error(inv_file: InventoryFile, message: str) -> None:
     inv_file.status = "error"
     inv_file.error_message = message
     inv_file.processed_at = datetime.now(timezone.utc)
+    logger.warning(
+        "Inventory file error (id=%s, blob=%s, endpoint=%s): %s",
+        inv_file.id,
+        inv_file.blob_name,
+        inv_file.endpoint_name,
+        message,
+    )
 
 
 def run_sync(db: Session, data_source: DataSource) -> dict:
@@ -170,6 +230,8 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
         },
     }
 
+    incremental_cutoff = _compute_incremental_cutoff(data_source.last_sync_at)
+
     try:
         blobs = bss.list_blobs(
             data_source.account_url,
@@ -177,6 +239,16 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
             data_source.container_name,
             data_source.blob_prefix or "",
         )
+        if incremental_cutoff is not None:
+            total_before_incremental = len(blobs)
+            blobs = [b for b in blobs if _is_blob_new_for_incremental(b.last_modified, incremental_cutoff)]
+            logger.info(
+                "Incremental sync for source %s (cutoff=%s): selected %s of %s blobs",
+                data_source.name,
+                incremental_cutoff.isoformat(),
+                len(blobs),
+                total_before_incremental,
+            )
         if data_source.max_files_per_run_enabled:
             blobs = blobs[: data_source.max_files_per_run]
             logger.info(
@@ -242,18 +314,42 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
             if blob.file_type == "hardware":
                 ingest_hardware_file(db, inv_file, raw)
             else:
-                ep = db.query(Endpoint).filter_by(endpoint_key=(blob.endpoint_name or "").upper()).first()
-                if ep:
-                    snapshot = db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).first()
-                    if snapshot:
-                        ingest_software_file(db, inv_file, raw, snapshot)
-                    else:
-                        _set_inventory_file_error(inv_file, "No current snapshot found for endpoint")
+                try:
+                    entries = parse_software_json(raw)
+                except Exception as e:
+                    _set_inventory_file_error(inv_file, f"Parse error: {e}")
                 else:
-                    _set_inventory_file_error(
-                        inv_file,
-                        f"Endpoint {blob.endpoint_name} not found - process hardware first",
-                    )
+                    content_endpoint_name = _resolve_software_endpoint_name(entries)
+                    if content_endpoint_name:
+                        filename_endpoint_name = _normalize_endpoint_name(inv_file.endpoint_name)
+                        inv_file.endpoint_name = content_endpoint_name
+                        if (
+                            filename_endpoint_name
+                            and filename_endpoint_name.upper() != content_endpoint_name.upper()
+                        ):
+                            logger.warning(
+                                "Endpoint mismatch in software file %s: filename=%s content=%s",
+                                inv_file.blob_name,
+                                filename_endpoint_name,
+                                content_endpoint_name,
+                            )
+                        ep = db.query(Endpoint).filter_by(endpoint_key=content_endpoint_name.upper()).first()
+                        if ep:
+                            snapshot = db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).first()
+                            if snapshot:
+                                ingest_software_file(db, inv_file, entries, snapshot)
+                            else:
+                                _set_inventory_file_error(inv_file, "No current snapshot found for endpoint")
+                        else:
+                            _set_inventory_file_error(
+                                inv_file,
+                                f"Endpoint {content_endpoint_name} not found - process hardware first",
+                            )
+                    else:
+                        _set_inventory_file_error(
+                            inv_file,
+                            "Unable to determine endpoint from software file content",
+                        )
             db.commit()
         except Exception as exc:
             db.rollback()

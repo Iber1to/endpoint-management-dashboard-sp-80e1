@@ -48,11 +48,12 @@ def _headers(api_key: str) -> dict[str, str]:
 
 
 def test_settings_sync_updates_end_to_end(client: TestClient, monkeypatch) -> None:
-    def fake_start_sync_run(data_source_id: int | None = None):
+    def fake_start_sync_run(data_source_id: int | None = None, force: bool = False):
         return (
             {
                 "run_id": "fake-run-id",
                 "data_source_id": data_source_id,
+                "force": force,
                 "status": "queued",
                 "requested_at": datetime.now(timezone.utc),
                 "started_at": None,
@@ -99,6 +100,74 @@ def test_settings_sync_updates_end_to_end(client: TestClient, monkeypatch) -> No
     assert sync_response.status_code == 200
     assert sync_response.json()["accepted"] is True
     assert sync_response.json()["run_id"] == "fake-run-id"
+
+
+def test_sync_run_force_query_bypasses_interval_guardrail(client: TestClient, monkeypatch) -> None:
+    captured_force: dict[str, bool] = {"value": False}
+
+    def fake_start_sync_run(data_source_id: int | None = None, force: bool = False):
+        captured_force["value"] = force
+        return (
+            {
+                "run_id": "force-run-id",
+                "data_source_id": data_source_id,
+                "force": force,
+                "status": "queued",
+                "requested_at": datetime.now(timezone.utc),
+                "started_at": None,
+                "finished_at": None,
+                "duration_seconds": None,
+                "stats": {
+                    "total": 0,
+                    "processed": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "by_type": {
+                        "hardware": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+                        "software": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+                    },
+                },
+                "sources_total": 1,
+                "sources_failed": [],
+                "evaluation_failed": False,
+                "message": None,
+            },
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(sync_routes, "start_sync_run", fake_start_sync_run)
+
+    response = client.post("/api/sync/run?force=true", headers=_headers("operator-test-key"))
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    assert response.json()["run_id"] == "force-run-id"
+    assert captured_force["value"] is True
+
+
+def test_settings_source_can_be_deleted(client: TestClient) -> None:
+    create_settings = client.post(
+        "/api/settings/blob",
+        headers=_headers("admin-test-key"),
+        json={
+            "name": "delete-me-source",
+            "account_url": "https://example.blob.core.windows.net",
+            "container_name": "inventory",
+            "sas_token": "sv=fake-token-for-tests",
+            "blob_prefix": "",
+            "sync_frequency_minutes": 480,
+            "is_active": True,
+        },
+    )
+    assert create_settings.status_code == 200
+    source_id = create_settings.json()["id"]
+
+    delete_response = client.delete(f"/api/settings/blob/{source_id}", headers=_headers("admin-test-key"))
+    assert delete_response.status_code == 204
+
+    list_response = client.get("/api/settings/blob", headers=_headers("admin-test-key"))
+    assert list_response.status_code == 200
+    assert all(s["id"] != source_id for s in list_response.json())
 
 
 def test_metrics_requires_auth_and_exposes_request_id(client: TestClient) -> None:

@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.core.auth import require_admin
 from app.core.logging import logger
 from app.db.session import get_db
-from app.db.models.datasource import DataSource
+from app.db.models import DataSource, EndpointSnapshot, InventoryFile
 from app.schemas.settings import BlobSettingsCreate, BlobSettingsOut, BlobTestRequest, BlobTestResponse
 from app.services import blob_storage_service as bss
 from app.core.security import encrypt_value, mask_token
@@ -90,3 +92,33 @@ def test_blob_connection(payload: BlobTestRequest):
         logger.warning("Blob connection test failed: %s", result["error"])
         result["error"] = "Could not connect to Azure Blob Storage with the provided settings"
     return BlobTestResponse(**result)
+
+
+@router.delete("/blob/{source_id}", status_code=204)
+def delete_blob_settings(source_id: int, db: Session = Depends(get_db)):
+    existing = db.query(DataSource).filter_by(id=source_id).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Data source not found")
+
+    inventory_file_ids = select(InventoryFile.id).where(InventoryFile.data_source_id == source_id)
+
+    try:
+        db.query(EndpointSnapshot).filter(
+            EndpointSnapshot.hardware_file_id.in_(inventory_file_ids)
+        ).update(
+            {EndpointSnapshot.hardware_file_id: None},
+            synchronize_session=False,
+        )
+        db.query(EndpointSnapshot).filter(
+            EndpointSnapshot.software_file_id.in_(inventory_file_ids)
+        ).update(
+            {EndpointSnapshot.software_file_id: None},
+            synchronize_session=False,
+        )
+
+        db.delete(existing)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.exception("Failed to delete data source %s due to related records", source_id)
+        raise HTTPException(status_code=409, detail="Data source cannot be deleted due to dependent records")

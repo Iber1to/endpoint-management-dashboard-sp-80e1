@@ -2,8 +2,15 @@ import { api } from "./api";
 import type { InventoryFile, SyncExecution, SyncRunAcceptedResponse } from "../types";
 
 export const syncService = {
-  runSync: (data_source_id?: number) =>
-    api.post<SyncRunAcceptedResponse>("/sync/run", null, { params: data_source_id ? { data_source_id } : undefined }).then((r) => r.data),
+  runSync: (options?: { data_source_id?: number; force?: boolean }) =>
+    api
+      .post<SyncRunAcceptedResponse>("/sync/run", null, {
+        params: {
+          ...(options?.data_source_id ? { data_source_id: options.data_source_id } : {}),
+          ...(options?.force ? { force: true } : {}),
+        },
+      })
+      .then((r) => r.data),
 
   getStatus: () =>
     api.get("/sync/status").then((r) => r.data),

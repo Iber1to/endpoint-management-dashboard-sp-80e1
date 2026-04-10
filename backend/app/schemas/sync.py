@@ -44,6 +44,9 @@ class SyncStatsOut(BaseModel):
     processed: int
     errors: int
     skipped: int
+    snapshots_created: int = 0
+    snapshot_id_from: Optional[int] = None
+    snapshot_id_to: Optional[int] = None
     by_type: dict[str, SyncTypeStats]
 
 

@@ -209,6 +209,9 @@ export interface SyncStats {
   processed: number;
   errors: number;
   skipped: number;
+  snapshots_created?: number;
+  snapshot_id_from?: number;
+  snapshot_id_to?: number;
   by_type: Record<string, SyncTypeStats>;
 }
 

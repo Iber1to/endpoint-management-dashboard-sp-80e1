@@ -5,6 +5,9 @@ export const settingsService = {
   getBlobSettings: () =>
     api.get<BlobSettings[]>("/settings/blob").then((r) => r.data),
 
+  deleteBlobSettings: (sourceId: number) =>
+    api.delete(`/settings/blob/${sourceId}`).then(() => undefined),
+
   saveBlobSettings: (payload: {
     name: string;
     account_url: string;
