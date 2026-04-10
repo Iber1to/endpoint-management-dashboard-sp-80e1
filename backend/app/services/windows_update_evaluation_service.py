@@ -105,12 +105,14 @@ def evaluate_all_updates(db: Session) -> dict:
     snapshots = db.query(EndpointSnapshot).filter_by(is_current=True).all()
     evaluated = 0
     errors = 0
+
     for snap in snapshots:
         try:
             evaluate_endpoint_snapshot(db, snap)
             evaluated += 1
-        except Exception as e:
-            logger.error(f"Error evaluating snapshot {snap.id}: {e}")
+        except Exception:
+            logger.exception(f"Error evaluating snapshot {snap.id}")
             errors += 1
+
     db.commit()
     return {"evaluated": evaluated, "errors": errors}

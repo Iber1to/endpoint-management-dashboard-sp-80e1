@@ -6,6 +6,7 @@ from app.db.models import WindowsUpdateStatus, WindowsPatchReference, Endpoint
 from app.schemas.updates import UpdateComplianceResponse, UpdateComplianceSummary, UpdateStatusOut, PatchReferenceOut
 from app.services.windows_patch_catalog_service import sync_patch_catalog
 from app.services.windows_update_evaluation_service import evaluate_all_updates
+from app.core.logging import logger
 
 router = APIRouter(prefix="/updates", tags=["updates"])
 
@@ -86,10 +87,22 @@ def get_catalog_status(db: Session = Depends(get_db)):
 @router.post("/catalog/sync")
 def trigger_catalog_sync(db: Session = Depends(get_db)):
     try:
-        result = sync_patch_catalog(db)
-        return {"success": True, "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.info("Starting manual patch catalog sync")
+        sync_result = sync_patch_catalog(db)
+
+        logger.info("Starting update evaluation after catalog sync")
+        evaluation_result = evaluate_all_updates(db)
+
+        return {
+            "success": True,
+            "result": {
+                "catalog_sync": sync_result,
+                "update_evaluation": evaluation_result,
+            },
+        }
+    except Exception:
+        logger.exception("Patch catalog sync or post-sync evaluation failed")
+        raise HTTPException(status_code=500, detail="Patch catalog sync failed")
 
 
 @router.post("/evaluate")
@@ -119,3 +132,4 @@ def get_updates_overview(db: Session = Depends(get_db)):
         "by_status": [{"status": r.compliance_status, "count": r.count} for r in by_status],
         "by_build": [{"full_build": r.full_build, "count": r.count} for r in by_build],
     }
+    
