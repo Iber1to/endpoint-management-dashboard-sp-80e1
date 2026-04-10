@@ -178,6 +178,8 @@ export interface BlobSettings {
   blob_prefix?: string;
   sas_token_masked?: string;
   sync_frequency_minutes: number;
+  max_files_per_run: number;
+  max_files_per_run_enabled: boolean;
   is_active: boolean;
   last_sync_at?: string;
   last_sync_status?: string;

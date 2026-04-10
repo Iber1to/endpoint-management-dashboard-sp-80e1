@@ -20,6 +20,8 @@ def _to_out(ds: DataSource) -> BlobSettingsOut:
         blob_prefix=ds.blob_prefix,
         sas_token_masked=ds.sas_token_hint,
         sync_frequency_minutes=ds.sync_frequency_minutes,
+        max_files_per_run=ds.max_files_per_run,
+        max_files_per_run_enabled=ds.max_files_per_run_enabled,
         is_active=ds.is_active,
         last_sync_at=ds.last_sync_at,
         last_sync_status=ds.last_sync_status,
@@ -50,6 +52,8 @@ def create_or_update_blob_settings(payload: BlobSettingsCreate, db: Session = De
         existing.sas_token_encrypted = encrypted_token
         existing.sas_token_hint = hint
         existing.sync_frequency_minutes = payload.sync_frequency_minutes
+        existing.max_files_per_run = payload.max_files_per_run
+        existing.max_files_per_run_enabled = payload.max_files_per_run_enabled
         existing.is_active = payload.is_active
         db.commit()
         db.refresh(existing)
@@ -64,6 +68,8 @@ def create_or_update_blob_settings(payload: BlobSettingsCreate, db: Session = De
         sas_token_encrypted=encrypted_token,
         sas_token_hint=hint,
         sync_frequency_minutes=payload.sync_frequency_minutes,
+        max_files_per_run=payload.max_files_per_run,
+        max_files_per_run_enabled=payload.max_files_per_run_enabled,
         is_active=payload.is_active,
     )
     db.add(ds)

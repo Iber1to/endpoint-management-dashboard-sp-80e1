@@ -21,6 +21,8 @@ class DataSource(Base):
     sas_token_hint: Mapped[str | None] = mapped_column(String(20))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_frequency_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    max_files_per_run: Mapped[int] = mapped_column(Integer, default=50000)
+    max_files_per_run_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_sync_status: Mapped[str | None] = mapped_column(String(50))
     last_error: Mapped[str | None] = mapped_column(Text)

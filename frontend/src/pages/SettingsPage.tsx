@@ -18,6 +18,8 @@ export default function SettingsPage() {
     sas_token: "",
     blob_prefix: "",
     sync_frequency_minutes: 60,
+    max_files_per_run: 50000,
+    max_files_per_run_enabled: false,
     is_active: true,
   });
 
@@ -56,6 +58,8 @@ export default function SettingsPage() {
       sas_token: "",
       blob_prefix: s.blob_prefix || "",
       sync_frequency_minutes: s.sync_frequency_minutes,
+      max_files_per_run: s.max_files_per_run ?? 50000,
+      max_files_per_run_enabled: s.max_files_per_run_enabled ?? false,
       is_active: s.is_active,
     });
   };
@@ -105,6 +109,33 @@ export default function SettingsPage() {
               onChange={(e) => setForm({ ...form, sync_frequency_minutes: Number(e.target.value) })}
             />
           </div>
+        </div>
+
+        <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.max_files_per_run_enabled}
+              onChange={(e) => setForm({ ...form, max_files_per_run_enabled: e.target.checked })}
+              className="rounded"
+            />
+            Enable max files per run safeguard
+          </label>
+          <div className="max-w-xs">
+            <label className="block text-sm font-medium text-gray-700 mb-1">max_files_per_run</label>
+            <input
+              type="number"
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-500"
+              value={form.max_files_per_run}
+              min={1}
+              onChange={(e) => setForm({ ...form, max_files_per_run: Number(e.target.value) })}
+              disabled={!form.max_files_per_run_enabled}
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Disabled by default. Use this only as a safeguard for unusually large backlogs. When enabled, each sync
+            execution processes at most the configured number of discovered files.
+          </p>
         </div>
 
         <div className="flex items-center gap-3">

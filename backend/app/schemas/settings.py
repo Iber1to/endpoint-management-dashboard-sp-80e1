@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -9,7 +9,9 @@ class BlobSettingsCreate(BaseModel):
     container_name: str
     sas_token: str
     blob_prefix: Optional[str] = ""
-    sync_frequency_minutes: int = 60
+    sync_frequency_minutes: int = Field(default=60, ge=5)
+    max_files_per_run: int = Field(default=50000, ge=1)
+    max_files_per_run_enabled: bool = False
     is_active: bool = True
 
 
@@ -21,6 +23,8 @@ class BlobSettingsOut(BaseModel):
     blob_prefix: Optional[str]
     sas_token_masked: Optional[str]
     sync_frequency_minutes: int
+    max_files_per_run: int
+    max_files_per_run_enabled: bool
     is_active: bool
     last_sync_at: Optional[datetime]
     last_sync_status: Optional[str]

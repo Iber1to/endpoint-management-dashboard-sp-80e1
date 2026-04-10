@@ -12,6 +12,8 @@ export const settingsService = {
     sas_token: string;
     blob_prefix?: string;
     sync_frequency_minutes?: number;
+    max_files_per_run?: number;
+    max_files_per_run_enabled?: boolean;
     is_active?: boolean;
   }) => api.post<BlobSettings>("/settings/blob", payload).then((r) => r.data),
 

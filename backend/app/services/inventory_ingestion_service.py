@@ -168,6 +168,13 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
             data_source.container_name,
             data_source.blob_prefix or "",
         )
+        if data_source.max_files_per_run_enabled:
+            blobs = blobs[: data_source.max_files_per_run]
+            logger.info(
+                "Sync run file cap enabled for source %s: processing up to %s blobs",
+                data_source.name,
+                data_source.max_files_per_run,
+            )
     except Exception as exc:
         data_source.last_sync_status = "error"
         data_source.last_error = str(exc)
