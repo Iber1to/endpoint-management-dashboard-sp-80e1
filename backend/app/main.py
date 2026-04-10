@@ -4,8 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import setup_logging, logger
 from app.core.scheduler import start_scheduler, stop_scheduler
-from app.db.base import Base
-from app.db.session import engine
 import app.db.models  # noqa: F401
 from app.api.routes import endpoints, software, updates, settings as settings_routes, sync, rules, overview
 
@@ -14,10 +12,6 @@ from app.api.routes import endpoints, software, updates, settings as settings_ro
 async def lifespan(app: FastAPI):
     setup_logging()
     logger.info("Starting Endpoint Management Dashboard API")
-    try:
-        Base.metadata.create_all(bind=engine)
-    except Exception as e:
-        logger.warning(f"Could not auto-create tables (run alembic instead): {e}")
     start_scheduler()
     yield
     stop_scheduler()

@@ -142,14 +142,21 @@ def ingest_software_file(db: Session, inv_file: InventoryFile, raw: bytes, snaps
     db.flush()
 
 
+def _set_inventory_file_error(inv_file: InventoryFile, message: str) -> None:
+    inv_file.status = "error"
+    inv_file.error_message = message
+    inv_file.processed_at = datetime.now(timezone.utc)
+
+
 def run_sync(db: Session, data_source: DataSource) -> dict:
     try:
         sas_token = decrypt_value(data_source.sas_token_encrypted or "")
-    except Exception as e:
-        msg = f"SAS token decryption failed (key mismatch or not set): {e}"
+    except Exception:
+        msg = "SAS token decryption failed (key mismatch or missing encryption key)"
         data_source.last_sync_status = "error"
         data_source.last_error = msg
         db.commit()
+        logger.exception("Failed to decrypt SAS token for data source %s", data_source.name)
         return {"error": msg}
 
     stats = {"total": 0, "processed": 0, "errors": 0, "skipped": 0}
@@ -161,11 +168,12 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
             data_source.container_name,
             data_source.blob_prefix or "",
         )
-    except Exception as e:
+    except Exception as exc:
         data_source.last_sync_status = "error"
-        data_source.last_error = str(e)
+        data_source.last_error = str(exc)
         db.commit()
-        return {"error": str(e)}
+        logger.exception("Failed to list blobs for data source %s", data_source.name)
+        return {"error": "Failed to list blobs from data source"}
 
     for blob in blobs:
         if blob.file_type not in ("hardware", "software"):
@@ -193,44 +201,54 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
             db.flush()
         else:
             inv_file = existing
-            inv_file.status = "pending"
+            inv_file.file_type = blob.file_type
+            inv_file.endpoint_name = blob.endpoint_name
+            inv_file.blob_last_modified = blob.last_modified
+
+        inv_file.status = "processing"
+        inv_file.error_message = None
+        inv_file.processed_at = None
+        db.commit()
 
         try:
             raw = bss.download_blob_json(data_source.account_url, sas_token, data_source.container_name, blob.name)
-        except Exception as e:
-            inv_file.status = "error"
-            inv_file.error_message = str(e)
+        except Exception as exc:
+            _set_inventory_file_error(inv_file, f"Download error: {exc}")
             stats["errors"] += 1
-            db.flush()
+            db.commit()
             continue
 
+        inv_file_id = inv_file.id
         try:
-            with db.begin_nested():
-                if blob.file_type == "hardware":
-                    ingest_hardware_file(db, inv_file, raw)
-                elif blob.file_type == "software":
-                    ep = db.query(Endpoint).filter_by(endpoint_key=(blob.endpoint_name or "").upper()).first()
-                    if ep:
-                        snapshot = db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).first()
-                        if snapshot:
-                            ingest_software_file(db, inv_file, raw, snapshot)
-                        else:
-                            inv_file.status = "error"
-                            inv_file.error_message = "No current snapshot found for endpoint"
+            if blob.file_type == "hardware":
+                ingest_hardware_file(db, inv_file, raw)
+            else:
+                ep = db.query(Endpoint).filter_by(endpoint_key=(blob.endpoint_name or "").upper()).first()
+                if ep:
+                    snapshot = db.query(EndpointSnapshot).filter_by(endpoint_id=ep.id, is_current=True).first()
+                    if snapshot:
+                        ingest_software_file(db, inv_file, raw, snapshot)
                     else:
-                        inv_file.status = "error"
-                        inv_file.error_message = f"Endpoint {blob.endpoint_name} not found — process hardware first"
-        except Exception as e:
-            inv_file.status = "error"
-            inv_file.error_message = f"Ingest error: {e}"
-            logger.error(f"Failed to ingest blob {blob.name}: {e}")
+                        _set_inventory_file_error(inv_file, "No current snapshot found for endpoint")
+                else:
+                    _set_inventory_file_error(
+                        inv_file,
+                        f"Endpoint {blob.endpoint_name} not found - process hardware first",
+                    )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Failed to ingest blob %s", blob.name)
+            failed_file = db.query(InventoryFile).filter_by(id=inv_file_id).first()
+            if failed_file:
+                _set_inventory_file_error(failed_file, f"Ingest error: {exc}")
+                db.commit()
 
-        if inv_file.status == "processed":
+        current_file = db.query(InventoryFile).filter_by(id=inv_file_id).first()
+        if current_file and current_file.status == "processed":
             stats["processed"] += 1
         else:
             stats["errors"] += 1
-
-    db.commit()
 
     data_source.last_sync_at = datetime.now(timezone.utc)
     data_source.last_sync_status = "success" if stats["errors"] == 0 else "partial"
