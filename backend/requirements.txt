@@ -14,3 +14,4 @@ cryptography==44.0.0
 apscheduler==3.10.4
 python-dateutil==2.9.0
 pytz==2024.2
+prometheus-client==0.21.1

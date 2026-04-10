@@ -187,3 +187,26 @@ npm run dev
 La documentación interactiva OpenAPI está disponible en `http://localhost:8000/docs` cuando el backend está en ejecución.
 
 Documentación detallada de contratos en [`docs/api-contracts.md`](docs/api-contracts.md).
+
+---
+
+## S4 Operational Additions
+
+### Observability
+- `GET /health` (public liveness)
+- `GET /health/details` (requires read API key)
+- `GET /metrics` (Prometheus format, requires read API key)
+- All responses include `X-Request-ID` for trace correlation.
+
+### Production environment template
+Use `/.env.production.example` as baseline for production deployments.
+
+### Backend tests and CI
+- Local test command:
+```bash
+PYTHONPATH=backend pytest -q backend/tests
+```
+- GitHub Actions workflow: `.github/workflows/backend-tests.yml`
+
+### Production runbook
+See `docs/runbook-production.md` for deploy, smoke tests, backup/restore, and rollback.

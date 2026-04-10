@@ -486,3 +486,34 @@ Verificación de salud del servicio.
 ```json
 { "status": "ok" }
 ```
+
+---
+
+## Health (Operational)
+
+### `GET /health/details`
+
+Estado operativo ampliado (requiere API key de lectura).
+
+**Respuesta:**
+```json
+{
+  "status": "ok",
+  "app_env": "production",
+  "scheduler_enabled": true,
+  "security_warnings": []
+}
+```
+
+---
+
+### `GET /metrics`
+
+Metricas Prometheus del backend (requiere API key de lectura).
+
+**Ejemplo de salida:**
+```text
+# HELP endpoint_dashboard_http_requests_total Total number of HTTP requests
+# TYPE endpoint_dashboard_http_requests_total counter
+endpoint_dashboard_http_requests_total{method="GET",path="/health",status_code="200"} 10.0
+```
