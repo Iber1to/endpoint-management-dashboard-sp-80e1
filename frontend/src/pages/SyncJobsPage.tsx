@@ -1,10 +1,18 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { syncService } from "../services/sync";
 import { formatDateTime } from "../utils";
-import type { InventoryFile } from "../types";
+import type { SyncExecution } from "../types";
+
+type ApiErrorDetail = {
+  message?: string;
+  retry_after_seconds?: number;
+};
 
 export default function SyncJobsPage() {
   const qc = useQueryClient();
+  const [runError, setRunError] = useState<string | null>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
 
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
@@ -12,23 +20,78 @@ export default function SyncJobsPage() {
     refetchInterval: 10_000,
   });
 
-  const { data: files, isLoading: filesLoading } = useQuery({
-    queryKey: ["sync-files"],
-    queryFn: () => syncService.listFiles({ limit: 100 }),
+  const { data: currentRun } = useQuery({
+    queryKey: ["sync-current-run"],
+    queryFn: () => syncService.getCurrentRun(),
+    refetchInterval: 3_000,
+  });
+
+  const { data: runHistory } = useQuery({
+    queryKey: ["sync-runs-history"],
+    queryFn: () => syncService.listRuns(12),
+    refetchInterval: 10_000,
   });
 
   const runSyncMutation = useMutation({
     mutationFn: () => syncService.runSync(),
+    onMutate: () => {
+      setRunError(null);
+      setRetryAfterSeconds(null);
+    },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sync-current-run"] });
+      qc.invalidateQueries({ queryKey: ["sync-runs-history"] });
       qc.invalidateQueries({ queryKey: ["sync-status"] });
-      qc.invalidateQueries({ queryKey: ["sync-files"] });
+    },
+    onError: (error: unknown) => {
+      const maybeAxiosError = error as {
+        response?: {
+          status?: number;
+          data?: { detail?: string | ApiErrorDetail };
+        };
+      };
+
+      const status = maybeAxiosError.response?.status;
+      const detail = maybeAxiosError.response?.data?.detail;
+
+      if (typeof detail === "object" && detail?.message) {
+        setRunError(detail.message);
+        if (typeof detail.retry_after_seconds === "number") {
+          setRetryAfterSeconds(detail.retry_after_seconds);
+        }
+        return;
+      }
+
+      if (typeof detail === "string" && detail) {
+        setRunError(detail);
+        return;
+      }
+
+      if (status === 409) {
+        setRunError("Ya hay una ejecucion de sincronizacion en curso.");
+        return;
+      }
+      if (status === 429) {
+        setRunError("No se puede lanzar una ejecucion manual todavia.");
+        return;
+      }
+
+      setRunError("Sync failed. Check backend logs for details.");
     },
   });
 
+  const isRunInProgress = currentRun?.status === "queued" || currentRun?.status === "running";
+
+  const latestCompletedRun = useMemo(() => {
+    return (runHistory ?? []).find((r: SyncExecution) => r.status !== "queued" && r.status !== "running");
+  }, [runHistory]);
+
   const statusColor = (s: string) => {
     if (s === "success") return "text-green-700 bg-green-100";
-    if (s === "error") return "text-red-700 bg-red-100";
+    if (s === "failed") return "text-red-700 bg-red-100";
     if (s === "partial") return "text-yellow-700 bg-yellow-100";
+    if (s === "running") return "text-blue-700 bg-blue-100";
+    if (s === "queued") return "text-purple-700 bg-purple-100";
     return "text-gray-600 bg-gray-100";
   };
 
@@ -38,36 +101,81 @@ export default function SyncJobsPage() {
         <h1 className="text-2xl font-bold text-gray-800">Sync Jobs</h1>
         <button
           onClick={() => runSyncMutation.mutate()}
-          disabled={runSyncMutation.isPending}
+          disabled={runSyncMutation.isPending || isRunInProgress}
           className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
-          {runSyncMutation.isPending ? "Syncing..." : "Run Sync Now"}
+          {isRunInProgress ? "Sync running..." : runSyncMutation.isPending ? "Starting..." : "Run Sync Now"}
         </button>
       </div>
 
       {runSyncMutation.isSuccess && (
         <div className="bg-green-50 border border-green-200 text-green-800 rounded-lg px-4 py-3 text-sm">
-          Sync complete: {JSON.stringify(runSyncMutation.data?.stats)}
+          Sync execution started successfully.
         </div>
       )}
-      {runSyncMutation.isError && (
-        <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm">
-          Sync failed. Check settings configuration.
+      {runError && (
+        <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm space-y-1">
+          <p>{runError}</p>
+          {retryAfterSeconds !== null && (
+            <p className="text-xs">
+              Puedes volver a lanzar en aproximadamente {Math.ceil(retryAfterSeconds / 60)} minutos.
+            </p>
+          )}
         </div>
       )}
 
-      {(syncStatus ?? []).map((s: { data_source_id: number; name: string; last_sync_at?: string; last_sync_status?: string; last_error?: string }) => (
-        <div key={s.data_source_id} className="bg-white border border-gray-200 rounded-lg p-5 space-y-2">
+      {currentRun && (
+        <div className="bg-white border border-gray-200 rounded-lg p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-gray-800">{s.name}</h3>
-            {s.last_sync_status && (
-              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(s.last_sync_status)}`}>{s.last_sync_status}</span>
-            )}
+            <h2 className="font-semibold text-gray-800">Current Execution</h2>
+            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(currentRun.status)}`}>
+              {currentRun.status}
+            </span>
           </div>
-          <p className="text-sm text-gray-500">Last sync: {formatDateTime(s.last_sync_at)}</p>
-          {s.last_error && <p className="text-sm text-red-600">Error: {s.last_error}</p>}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <Kpi label="Descubiertos" value={currentRun.stats.total} />
+            <Kpi label="Procesados" value={currentRun.stats.processed} />
+            <Kpi label="Errores" value={currentRun.stats.errors} />
+            <Kpi label="Omitidos" value={currentRun.stats.skipped} />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <TypeBox
+              title="Hardware"
+              discovered={currentRun.stats.by_type.hardware?.discovered ?? 0}
+              processed={currentRun.stats.by_type.hardware?.processed ?? 0}
+              errors={currentRun.stats.by_type.hardware?.errors ?? 0}
+            />
+            <TypeBox
+              title="Software"
+              discovered={currentRun.stats.by_type.software?.discovered ?? 0}
+              processed={currentRun.stats.by_type.software?.processed ?? 0}
+              errors={currentRun.stats.by_type.software?.errors ?? 0}
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Started: {formatDateTime(currentRun.started_at)} · Finished: {formatDateTime(currentRun.finished_at)} ·
+            Duration: {currentRun.duration_seconds ? `${Math.round(currentRun.duration_seconds)}s` : "—"}
+          </p>
+          {currentRun.message && <p className="text-xs text-gray-600">{currentRun.message}</p>}
         </div>
-      ))}
+      )}
+
+      {(syncStatus ?? []).map(
+        (s: { data_source_id: number; name: string; last_sync_at?: string; last_sync_status?: string; last_error?: string }) => (
+          <div key={s.data_source_id} className="bg-white border border-gray-200 rounded-lg p-5 space-y-2">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-gray-800">{s.name}</h3>
+              {s.last_sync_status && (
+                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(s.last_sync_status)}`}>
+                  {s.last_sync_status}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-gray-500">Last sync: {formatDateTime(s.last_sync_at)}</p>
+            {s.last_error && <p className="text-sm text-red-600">Error: {s.last_error}</p>}
+          </div>
+        )
+      )}
 
       {(!syncStatus || syncStatus.length === 0) && (
         <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-4 text-sm">
@@ -76,42 +184,79 @@ export default function SyncJobsPage() {
       )}
 
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-600 uppercase">Recent Files ({(files ?? []).length})</h2>
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-600 uppercase">Recent Executions</h2>
+          {latestCompletedRun && (
+            <span className="text-xs text-gray-500">
+              Last duration:{" "}
+              {latestCompletedRun.duration_seconds ? `${Math.round(latestCompletedRun.duration_seconds)}s` : "—"}
+            </span>
+          )}
         </div>
-        {filesLoading ? (
-          <div className="p-8 text-center text-gray-400">Loading...</div>
-        ) : (
-          <table className="min-w-full text-sm divide-y divide-gray-100">
-            <thead className="bg-gray-50">
-              <tr>
-                {["Blob Name", "Type", "Endpoint", "Last Modified", "Status", "Error"].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {(files ?? []).map((f: InventoryFile) => (
-                <tr key={f.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-2 font-mono text-xs text-gray-700 max-w-xs truncate">{f.blob_name}</td>
-                  <td className="px-4 py-2"><span className="text-xs bg-gray-100 px-2 py-0.5 rounded">{f.file_type || "—"}</span></td>
-                  <td className="px-4 py-2 text-gray-600">{f.endpoint_name || "—"}</td>
-                  <td className="px-4 py-2 text-xs text-gray-400">{formatDateTime(f.blob_last_modified)}</td>
-                  <td className="px-4 py-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${f.status === "processed" ? "bg-green-100 text-green-700" : f.status === "error" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600"}`}>
-                      {f.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2 text-xs text-red-500 max-w-xs truncate">{f.error_message || ""}</td>
-                </tr>
+        <table className="min-w-full text-sm divide-y divide-gray-100">
+          <thead className="bg-gray-50">
+            <tr>
+              {["Requested", "Status", "Descubiertos", "Procesados", "Errores", "Duracion", "Resultado"].map((h) => (
+                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">
+                  {h}
+                </th>
               ))}
-            </tbody>
-          </table>
-        )}
-        {!filesLoading && (!files || files.length === 0) && (
-          <p className="text-center py-8 text-gray-400">No files processed yet</p>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {(runHistory ?? []).map((run: SyncExecution) => (
+              <tr key={run.run_id} className="hover:bg-gray-50">
+                <td className="px-4 py-2 text-xs text-gray-500">{formatDateTime(run.requested_at)}</td>
+                <td className="px-4 py-2">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor(run.status)}`}>
+                    {run.status}
+                  </span>
+                </td>
+                <td className="px-4 py-2">{run.stats.total}</td>
+                <td className="px-4 py-2">{run.stats.processed}</td>
+                <td className="px-4 py-2">{run.stats.errors}</td>
+                <td className="px-4 py-2 text-xs text-gray-500">
+                  {run.duration_seconds ? `${Math.round(run.duration_seconds)}s` : "—"}
+                </td>
+                <td className="px-4 py-2 text-xs text-gray-600">{run.message || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {(!runHistory || runHistory.length === 0) && (
+          <p className="text-center py-8 text-gray-400">No sync executions yet</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function Kpi({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded border border-gray-200 p-3 bg-gray-50">
+      <p className="text-xs uppercase text-gray-500">{label}</p>
+      <p className="text-lg font-semibold text-gray-800">{value}</p>
+    </div>
+  );
+}
+
+function TypeBox({
+  title,
+  discovered,
+  processed,
+  errors,
+}: {
+  title: string;
+  discovered: number;
+  processed: number;
+  errors: number;
+}) {
+  return (
+    <div className="rounded border border-gray-200 p-3 bg-gray-50">
+      <p className="text-xs uppercase text-gray-500 mb-1">{title}</p>
+      <p className="text-xs text-gray-700">Descubiertos: {discovered}</p>
+      <p className="text-xs text-gray-700">Procesados: {processed}</p>
+      <p className="text-xs text-gray-700">Errores: {errors}</p>
     </div>
   );
 }

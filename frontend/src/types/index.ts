@@ -197,6 +197,44 @@ export interface InventoryFile {
   processed_at?: string;
 }
 
+export interface SyncTypeStats {
+  discovered: number;
+  processed: number;
+  errors: number;
+  skipped: number;
+}
+
+export interface SyncStats {
+  total: number;
+  processed: number;
+  errors: number;
+  skipped: number;
+  by_type: Record<string, SyncTypeStats>;
+}
+
+export interface SyncExecution {
+  run_id: string;
+  data_source_id?: number;
+  status: "queued" | "running" | "success" | "partial" | "failed";
+  requested_at: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_seconds?: number;
+  stats: SyncStats;
+  sources_total: number;
+  sources_failed: string[];
+  evaluation_failed: boolean;
+  message?: string;
+}
+
+export interface SyncRunAcceptedResponse {
+  accepted: boolean;
+  run_id?: string;
+  status: string;
+  message?: string;
+  retry_after_seconds?: number;
+}
+
 export interface OverviewData {
   total_endpoints: number;
   recent_endpoints: number;

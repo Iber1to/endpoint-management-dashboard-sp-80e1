@@ -17,7 +17,7 @@ export default function SettingsPage() {
     container_name: "",
     sas_token: "",
     blob_prefix: "",
-    sync_frequency_minutes: 60,
+    sync_frequency_minutes: 1440,
     max_files_per_run: 50000,
     max_files_per_run_enabled: false,
     is_active: true,
@@ -57,7 +57,7 @@ export default function SettingsPage() {
       container_name: s.container_name || "",
       sas_token: "",
       blob_prefix: s.blob_prefix || "",
-      sync_frequency_minutes: s.sync_frequency_minutes,
+      sync_frequency_minutes: Math.max(480, s.sync_frequency_minutes),
       max_files_per_run: s.max_files_per_run ?? 50000,
       max_files_per_run_enabled: s.max_files_per_run_enabled ?? false,
       is_active: s.is_active,
@@ -105,9 +105,10 @@ export default function SettingsPage() {
               type="number"
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               value={form.sync_frequency_minutes}
-              min={5}
+              min={480}
               onChange={(e) => setForm({ ...form, sync_frequency_minutes: Number(e.target.value) })}
             />
+            <p className="mt-1 text-xs text-gray-500">Minimum allowed: 480 minutes (8 hours).</p>
           </div>
         </div>
 

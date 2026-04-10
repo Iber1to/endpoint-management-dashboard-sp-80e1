@@ -25,6 +25,38 @@ class SyncStatusResponse(BaseModel):
 
 
 class SyncRunResponse(BaseModel):
-    success: bool
-    stats: dict
-    error: Optional[str] = None
+    accepted: bool
+    run_id: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+    retry_after_seconds: Optional[int] = None
+
+
+class SyncTypeStats(BaseModel):
+    discovered: int
+    processed: int
+    errors: int
+    skipped: int
+
+
+class SyncStatsOut(BaseModel):
+    total: int
+    processed: int
+    errors: int
+    skipped: int
+    by_type: dict[str, SyncTypeStats]
+
+
+class SyncExecutionOut(BaseModel):
+    run_id: str
+    data_source_id: Optional[int]
+    status: str
+    requested_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    duration_seconds: Optional[float]
+    stats: SyncStatsOut
+    sources_total: int
+    sources_failed: list[str]
+    evaluation_failed: bool
+    message: Optional[str]

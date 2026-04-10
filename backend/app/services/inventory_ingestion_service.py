@@ -159,7 +159,16 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
         logger.exception("Failed to decrypt SAS token for data source %s", data_source.name)
         return {"error": msg}
 
-    stats = {"total": 0, "processed": 0, "errors": 0, "skipped": 0}
+    stats = {
+        "total": 0,
+        "processed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "by_type": {
+            "hardware": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+            "software": {"discovered": 0, "processed": 0, "errors": 0, "skipped": 0},
+        },
+    }
 
     try:
         blobs = bss.list_blobs(
@@ -186,12 +195,14 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
         if blob.file_type not in ("hardware", "software"):
             continue
         stats["total"] += 1
+        stats["by_type"][blob.file_type]["discovered"] += 1
 
         existing = db.query(InventoryFile).filter_by(
             data_source_id=data_source.id, blob_name=blob.name, etag=blob.etag
         ).first()
         if existing and existing.status == "processed":
             stats["skipped"] += 1
+            stats["by_type"][blob.file_type]["skipped"] += 1
             continue
 
         if not existing:
@@ -222,6 +233,7 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
         except Exception as exc:
             _set_inventory_file_error(inv_file, f"Download error: {exc}")
             stats["errors"] += 1
+            stats["by_type"][blob.file_type]["errors"] += 1
             db.commit()
             continue
 
@@ -254,8 +266,10 @@ def run_sync(db: Session, data_source: DataSource) -> dict:
         current_file = db.query(InventoryFile).filter_by(id=inv_file_id).first()
         if current_file and current_file.status == "processed":
             stats["processed"] += 1
+            stats["by_type"][blob.file_type]["processed"] += 1
         else:
             stats["errors"] += 1
+            stats["by_type"][blob.file_type]["errors"] += 1
 
     data_source.last_sync_at = datetime.now(timezone.utc)
     data_source.last_sync_status = "success" if stats["errors"] == 0 else "partial"

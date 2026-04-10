@@ -9,7 +9,7 @@ class BlobSettingsCreate(BaseModel):
     container_name: str
     sas_token: str
     blob_prefix: Optional[str] = ""
-    sync_frequency_minutes: int = Field(default=60, ge=5)
+    sync_frequency_minutes: int = Field(default=1440, ge=480)
     max_files_per_run: int = Field(default=50000, ge=1)
     max_files_per_run_enabled: bool = False
     is_active: bool = True

@@ -1,66 +1,64 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import require_operator, require_read
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from app.db.session import get_db
+
+from app.core.auth import require_operator, require_read
 from app.db.models.datasource import DataSource, InventoryFile
-from app.schemas.sync import SyncStatusResponse, SyncRunResponse, InventoryFileOut
-from app.services.inventory_ingestion_service import run_sync
-from app.services.windows_update_evaluation_service import evaluate_all_updates
-from app.core.logging import logger
+from app.db.session import get_db
+from app.schemas.sync import (
+    InventoryFileOut,
+    SyncExecutionOut,
+    SyncRunResponse,
+    SyncStatusResponse,
+)
+from app.services.sync_execution_service import get_active_run, list_runs, start_sync_run
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 @router.post("/run", response_model=SyncRunResponse)
 def run_sync_now(
-    db: Session = Depends(get_db),
     data_source_id: int | None = None,
     _auth=Depends(require_operator),
 ):
-    q = db.query(DataSource).filter_by(is_active=True)
-    if data_source_id:
-        q = q.filter_by(id=data_source_id)
+    run, error_message, retry_after_seconds = start_sync_run(data_source_id=data_source_id)
+    if run:
+        return SyncRunResponse(
+            accepted=True,
+            run_id=run["run_id"],
+            status=run["status"],
+            message="Sync execution started",
+        )
 
-    sources = q.all()
-    if not sources:
-        raise HTTPException(status_code=404, detail="No active data sources found")
+    if retry_after_seconds is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "message": error_message,
+                "retry_after_seconds": retry_after_seconds,
+            },
+        )
 
-    all_stats: dict = {"total": 0, "processed": 0, "errors": 0, "skipped": 0}
-    failed_sources: list[str] = []
+    if error_message == "A sync execution is already in progress":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=error_message)
 
-    for source in sources:
-        try:
-            logger.info(f"Syncing source {source.name}")
-            stats = run_sync(db, source)
-            if "error" in stats:
-                logger.warning("Sync failed for source %s: %s", source.name, stats["error"])
-                failed_sources.append(source.name)
-            for k in all_stats:
-                all_stats[k] += stats.get(k, 0)
-        except Exception:
-            logger.exception(f"Inventory sync failed for source {source.name}")
-            failed_sources.append(source.name)
+    if error_message == "No active data sources found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_message)
 
-    evaluation_failed = False
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_message or "Unable to start sync")
 
-    if all_stats.get("processed", 0) > 0:
-        try:
-            logger.info("Starting update evaluation after inventory sync")
-            evaluate_all_updates(db)
-        except Exception:
-            logger.exception("Update evaluation failed after inventory sync")
-            evaluation_failed = True
 
-    if failed_sources or evaluation_failed:
-        parts = []
-        if failed_sources:
-            unique_sources = ", ".join(sorted(set(failed_sources)))
-            parts.append(f"Sources failed: {unique_sources}")
-        if evaluation_failed:
-            parts.append("Post-sync update evaluation failed")
-        return SyncRunResponse(success=False, stats=all_stats, error="; ".join(parts))
+@router.get("/runs/current", response_model=SyncExecutionOut | None)
+def get_current_sync_run(_auth=Depends(require_read)):
+    run = get_active_run()
+    return SyncExecutionOut.model_validate(run) if run else None
 
-    return SyncRunResponse(success=True, stats=all_stats)
+
+@router.get("/runs", response_model=list[SyncExecutionOut])
+def get_sync_runs(
+    limit: int = Query(10, ge=1, le=50),
+    _auth=Depends(require_read),
+):
+    return [SyncExecutionOut.model_validate(r) for r in list_runs(limit=limit)]
 
 
 @router.get("/status", response_model=list[SyncStatusResponse])
