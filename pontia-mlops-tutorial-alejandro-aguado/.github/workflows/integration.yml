@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      issues: write
 
     steps:
       - name: Checkout code
@@ -19,7 +20,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
@@ -29,20 +30,20 @@ jobs:
       - name: Run tests and save exit code
         id: tests
         run: |
-            mkdir -p test-results
-            PYTHONPATH=src pytest unit_tests/ --capture=tee-sys --cov=model --cov=evaluate --cov=data_loader --cov-report=term --cov-report=html --junitxml=test-results/results.xml > test-results/results.log
+          mkdir -p test-results
+          PYTHONPATH=src pytest unit_tests/ --capture=tee-sys --cov=model --cov=evaluate --cov=data_loader --cov-report=term --cov-report=html --junitxml=test-results/results.xml > test-results/results.log
         continue-on-error: true
 
       - name: Comment test results and coverage on PR
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const results = fs.readFileSync('test-results/results.log', 'utf8');
-            const truncated = results.length > 65000 ? results.slice(0, 65000) + '\\n...TRUNCATED...' : results;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const truncated = results.length > 65000 ? results.slice(0, 65000) + '\n...TRUNCATED...' : results;
+            await github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `### 🧪 Test Results with Coverage\n\n\`\`\`\n${truncated}\n\`\`\``
