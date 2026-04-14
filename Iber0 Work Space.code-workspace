@@ -15,11 +15,10 @@
 			"path": "Pontia Ejercicios"
 		},
 		{
-			"name": "pontia-mlops-tutorial-alejandro-aguado",
-			"path": "pontia-mlops-tutorial-alejandro-aguado"
+			"path": "../../Users/DanteInferno/.zenflow/worktrees/endpoint-management-dashboard-sp-80e1"
 		},
 		{
-			"path": "../../Users/DanteInferno/.zenflow/worktrees/endpoint-management-dashboard-sp-80e1"
+			"path": "pontia-mlops-tutorial-alejandro-aguado"
 		}
 	],
 	"settings": {
