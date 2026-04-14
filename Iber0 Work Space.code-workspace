@@ -1,0 +1,29 @@
+{
+	"folders": [
+		{
+			"path": "Old-Scripts"
+		},
+		{
+			"name": "PowerShell",
+			"path": "PowerShell"
+		},
+		{
+			"name": "Economicon",
+			"path": "Economicon"
+		},
+		{
+			"path": "Pontia Ejercicios"
+		},
+		{
+			"name": "pontia-mlops-tutorial-alejandro-aguado",
+			"path": "pontia-mlops-tutorial-alejandro-aguado"
+		},
+		{
+			"path": "../../Users/DanteInferno/.zenflow/worktrees/endpoint-management-dashboard-sp-80e1"
+		}
+	],
+	"settings": {
+		"python.terminal.useEnvFile": true,
+		"postman.settings.dotenv-detection-notification-visibility": false
+	}
+}
