@@ -1,0 +1,36 @@
+name: Build Model
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:      
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '2.6'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install scikit-learn pandas joblib mlflow azure-storage-blob azure-identity pytest mlflow-skinny numpy
+      
+      - name: Train and save model
+        run: |
+          python src/main.py
+          
+      - name: Run model tests
+        run: python model_tests/test_model.py
+
+      - name: Upload model to GitHub Release
+        uses: softprops/action-gh-release@v1
