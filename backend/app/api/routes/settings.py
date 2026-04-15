@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.core.auth import require_admin
+from app.core.auth import require_operator
 from app.core.logging import logger
 from app.db.session import get_db
 from app.db.models import DataSource, EndpointSnapshot, InventoryFile
@@ -10,7 +10,7 @@ from app.schemas.settings import BlobSettingsCreate, BlobSettingsOut, BlobTestRe
 from app.services import blob_storage_service as bss
 from app.core.security import encrypt_value, mask_token
 
-router = APIRouter(prefix="/settings", tags=["settings"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 def _to_out(ds: DataSource) -> BlobSettingsOut:
@@ -32,12 +32,16 @@ def _to_out(ds: DataSource) -> BlobSettingsOut:
 
 
 @router.get("/blob", response_model=list[BlobSettingsOut])
-def get_blob_settings(db: Session = Depends(get_db)):
+def get_blob_settings(db: Session = Depends(get_db), _auth=Depends(require_operator)):
     return [_to_out(s) for s in db.query(DataSource).all()]
 
 
 @router.post("/blob", response_model=BlobSettingsOut)
-def create_or_update_blob_settings(payload: BlobSettingsCreate, db: Session = Depends(get_db)):
+def create_or_update_blob_settings(
+    payload: BlobSettingsCreate,
+    db: Session = Depends(get_db),
+    _auth=Depends(require_operator),
+):
     try:
         encrypted_token = encrypt_value(payload.sas_token)
     except RuntimeError:
@@ -81,7 +85,7 @@ def create_or_update_blob_settings(payload: BlobSettingsCreate, db: Session = De
 
 
 @router.post("/blob/test", response_model=BlobTestResponse)
-def test_blob_connection(payload: BlobTestRequest):
+def test_blob_connection(payload: BlobTestRequest, _auth=Depends(require_operator)):
     result = bss.test_connection(
         payload.account_url,
         payload.sas_token,
@@ -95,7 +99,11 @@ def test_blob_connection(payload: BlobTestRequest):
 
 
 @router.delete("/blob/{source_id}", status_code=204)
-def delete_blob_settings(source_id: int, db: Session = Depends(get_db)):
+def delete_blob_settings(
+    source_id: int,
+    db: Session = Depends(get_db),
+    _auth=Depends(require_operator),
+):
     existing = db.query(DataSource).filter_by(id=source_id).first()
     if not existing:
         raise HTTPException(status_code=404, detail="Data source not found")

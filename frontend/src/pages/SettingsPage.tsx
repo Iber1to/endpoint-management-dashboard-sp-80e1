@@ -30,10 +30,14 @@ export default function SettingsPage() {
     mutationFn: () => settingsService.saveBlobSettings(form),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["blob-settings"] });
+      setTestResult(null);
     },
   });
 
   const testMutation = useMutation({
+    onMutate: () => {
+      setTestResult(null);
+    },
     mutationFn: () =>
       settingsService.testConnection({
         account_url: form.account_url,
@@ -46,6 +50,12 @@ export default function SettingsPage() {
         success: data.success,
         message: data.success ? "Connection successful!" : `Failed: ${data.error}`,
         blobs: data.sample_blobs,
+      });
+    },
+    onError: (error) => {
+      setTestResult({
+        success: false,
+        message: `Failed: ${getApiErrorMessage(error, "Connection test failed")}`,
       });
     },
   });
@@ -238,12 +248,46 @@ export default function SettingsPage() {
         </div>
 
         {saveMutation.isSuccess && <p className="text-sm text-green-700">Settings saved successfully.</p>}
-        {saveMutation.isError && <p className="text-sm text-red-700">Failed to save settings.</p>}
+        {saveMutation.isError && (
+          <p className="text-sm text-red-700">
+            Failed to save settings: {getApiErrorMessage(saveMutation.error, "Unknown error")}
+          </p>
+        )}
         {deleteMutation.isSuccess && <p className="text-sm text-green-700">Source deleted successfully.</p>}
-        {deleteMutation.isError && <p className="text-sm text-red-700">Failed to delete source.</p>}
+        {deleteMutation.isError && (
+          <p className="text-sm text-red-700">
+            Failed to delete source: {getApiErrorMessage(deleteMutation.error, "Unknown error")}
+          </p>
+        )}
       </div>
     </div>
   );
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  const maybeError = error as {
+    message?: string;
+    response?: {
+      data?: {
+        detail?: unknown;
+      };
+    };
+  };
+
+  const detail = maybeError?.response?.data?.detail;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const nested = (detail as { message?: unknown }).message;
+    if (typeof nested === "string" && nested.trim()) {
+      return nested;
+    }
+  }
+  if (typeof maybeError?.message === "string" && maybeError.message.trim()) {
+    return maybeError.message;
+  }
+  return fallback;
 }
 
 function FormField({
