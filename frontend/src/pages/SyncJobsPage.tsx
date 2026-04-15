@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { syncService } from "../services/sync";
 import { formatDateTime } from "../utils";
@@ -14,11 +14,13 @@ export default function SyncJobsPage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null);
   const [forceRun, setForceRun] = useState(false);
+  const [selectedSyncType, setSelectedSyncType] = useState("all");
+  const hadRunInProgressRef = useRef(false);
 
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
     queryFn: () => syncService.getStatus(),
-    refetchInterval: 10_000,
+    refetchInterval: 5_000,
   });
 
   const { data: currentRun } = useQuery({
@@ -27,10 +29,16 @@ export default function SyncJobsPage() {
     refetchInterval: 3_000,
   });
 
+  const { data: runTypes } = useQuery({
+    queryKey: ["sync-runs-types"],
+    queryFn: () => syncService.listRunTypes(),
+    refetchInterval: 15_000,
+  });
+
   const { data: runHistory } = useQuery({
-    queryKey: ["sync-runs-history"],
-    queryFn: () => syncService.listRuns(12),
-    refetchInterval: 10_000,
+    queryKey: ["sync-runs-history", selectedSyncType],
+    queryFn: () => syncService.listRuns(500, selectedSyncType),
+    refetchInterval: 5_000,
   });
 
   const runSyncMutation = useMutation({
@@ -43,6 +51,7 @@ export default function SyncJobsPage() {
       qc.invalidateQueries({ queryKey: ["sync-current-run"] });
       qc.invalidateQueries({ queryKey: ["sync-runs-history"] });
       qc.invalidateQueries({ queryKey: ["sync-status"] });
+      qc.invalidateQueries({ queryKey: ["sync-runs-types"] });
     },
     onError: (error: unknown) => {
       const maybeAxiosError = error as {
@@ -83,6 +92,21 @@ export default function SyncJobsPage() {
 
   const isRunInProgress = currentRun?.status === "queued" || currentRun?.status === "running";
 
+  useEffect(() => {
+    if (isRunInProgress) {
+      hadRunInProgressRef.current = true;
+      return;
+    }
+    if (!hadRunInProgressRef.current) {
+      return;
+    }
+
+    hadRunInProgressRef.current = false;
+    qc.invalidateQueries({ queryKey: ["sync-runs-history"] });
+    qc.invalidateQueries({ queryKey: ["sync-status"] });
+    qc.invalidateQueries({ queryKey: ["sync-runs-types"] });
+  }, [isRunInProgress, qc]);
+
   const latestCompletedRun = useMemo(() => {
     return (runHistory ?? []).find((r: SyncExecution) => r.status !== "queued" && r.status !== "running");
   }, [runHistory]);
@@ -95,6 +119,18 @@ export default function SyncJobsPage() {
     if (s === "queued") return "text-purple-700 bg-purple-100";
     return "text-gray-600 bg-gray-100";
   };
+
+  const syncTypeLabel = (syncType: string) => {
+    if (syncType === "inventory") return "Inventario";
+    if (syncType === "patch_catalog") return "Patch Catalog";
+    return syncType;
+  };
+
+  const availableSyncTypes = useMemo(() => {
+    const apiTypes = runTypes ?? [];
+    const historyTypes = (runHistory ?? []).map((run) => run.sync_type).filter(Boolean);
+    return Array.from(new Set([...apiTypes, ...historyTypes]));
+  }, [runHistory, runTypes]);
 
   const formatSnapshotRange = (run: SyncExecution) => {
     const from = run.stats.snapshot_id_from;
@@ -208,7 +244,21 @@ export default function SyncJobsPage() {
 
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-600 uppercase">Recent Executions</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold text-gray-600 uppercase">Recent Executions</h2>
+            <select
+              value={selectedSyncType}
+              onChange={(event) => setSelectedSyncType(event.target.value)}
+              className="border border-gray-300 rounded-md text-xs px-2 py-1 text-gray-700 bg-white"
+            >
+              <option value="all">Todos</option>
+              {availableSyncTypes.map((type) => (
+                <option key={type} value={type}>
+                  {syncTypeLabel(type)}
+                </option>
+              ))}
+            </select>
+          </div>
           {latestCompletedRun && (
             <span className="text-xs text-gray-500">
               Last duration:{" "}
@@ -219,7 +269,7 @@ export default function SyncJobsPage() {
         <table className="min-w-full text-sm divide-y divide-gray-100">
           <thead className="bg-gray-50">
             <tr>
-              {["Requested", "Status", "Descubiertos", "Procesados", "Errores", "Snapshots", "Duracion", "Resultado"].map((h) => (
+              {["Requested", "Tipo", "Status", "Descubiertos", "Procesados", "Errores", "Snapshots", "Duracion", "Resultado"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">
                   {h}
                 </th>
@@ -230,6 +280,7 @@ export default function SyncJobsPage() {
             {(runHistory ?? []).map((run: SyncExecution) => (
               <tr key={run.run_id} className="hover:bg-gray-50">
                 <td className="px-4 py-2 text-xs text-gray-500">{formatDateTime(run.requested_at)}</td>
+                <td className="px-4 py-2 text-xs text-gray-600">{syncTypeLabel(run.sync_type)}</td>
                 <td className="px-4 py-2">
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor(run.status)}`}>
                     {run.status}

@@ -1,21 +1,12 @@
-from app.db.session import SessionLocal
-from app.services.windows_patch_catalog_service import sync_patch_catalog as _sync_catalog
-from app.services.windows_update_evaluation_service import evaluate_all_updates as _evaluate
 from app.core.logging import logger
+from app.services.sync_execution_service import execute_patch_catalog_run
 
 
 async def sync_patch_catalog() -> None:
-    db = SessionLocal()
     try:
-        logger.info("Starting Windows patch catalog sync")
-        sync_result = _sync_catalog(db)
-        logger.info(f"Patch catalog sync done: {sync_result}")
-
-        logger.info("Starting Windows update evaluation after patch catalog sync")
-        eval_result = _evaluate(db)
-        logger.info(f"Update evaluation done after patch catalog sync: {eval_result}")
+        logger.info("Starting scheduled tracked patch catalog sync")
+        run = execute_patch_catalog_run(trigger="scheduler")
+        logger.info("Scheduled patch catalog sync finished (run_id=%s, status=%s)", run["run_id"], run["status"])
     except Exception:
         logger.exception("Patch catalog sync job failed")
         raise
-    finally:
-        db.close()

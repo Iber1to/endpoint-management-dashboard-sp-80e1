@@ -14,6 +14,7 @@ class SyncRun(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     run_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    sync_type: Mapped[str] = mapped_column(String(32), index=True, default="inventory")
     data_source_id: Mapped[int | None] = mapped_column(ForeignKey("data_sources.id", ondelete="SET NULL"), index=True)
     force: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), index=True)

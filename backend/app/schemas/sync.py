@@ -52,6 +52,7 @@ class SyncStatsOut(BaseModel):
 
 class SyncExecutionOut(BaseModel):
     run_id: str
+    sync_type: str
     data_source_id: Optional[int]
     status: str
     requested_at: datetime

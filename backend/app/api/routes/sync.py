@@ -10,7 +10,7 @@ from app.schemas.sync import (
     SyncRunResponse,
     SyncStatusResponse,
 )
-from app.services.sync_execution_service import get_active_run, list_runs, start_sync_run
+from app.services.sync_execution_service import get_active_run, list_run_types, list_runs, start_sync_run
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -59,10 +59,17 @@ def get_current_sync_run(_auth=Depends(require_read)):
 
 @router.get("/runs", response_model=list[SyncExecutionOut])
 def get_sync_runs(
-    limit: int = Query(10, ge=1, le=50),
+    limit: int = Query(50, ge=1, le=500),
+    sync_type: str | None = Query(default=None, description="Filter by sync type"),
     _auth=Depends(require_read),
 ):
-    return [SyncExecutionOut.model_validate(r) for r in list_runs(limit=limit)]
+    normalized_sync_type = None if not sync_type or sync_type == "all" else sync_type
+    return [SyncExecutionOut.model_validate(r) for r in list_runs(limit=limit, sync_type=normalized_sync_type)]
+
+
+@router.get("/runs/types", response_model=list[str])
+def get_sync_run_types(_auth=Depends(require_read)):
+    return list_run_types()
 
 
 @router.get("/status", response_model=list[SyncStatusResponse])

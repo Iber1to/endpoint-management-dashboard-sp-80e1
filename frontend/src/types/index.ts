@@ -217,6 +217,7 @@ export interface SyncStats {
 
 export interface SyncExecution {
   run_id: string;
+  sync_type: string;
   data_source_id?: number;
   status: "queued" | "running" | "success" | "partial" | "failed";
   requested_at: string;
