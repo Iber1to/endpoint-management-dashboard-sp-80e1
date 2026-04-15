@@ -11,6 +11,6 @@ server {
         proxy_pass http://backend:8000/api/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-API-Key "${API_PROXY_KEY}";
+        proxy_set_header X-API-Key "${OPERATOR_API_KEY}";
     }
 }

@@ -43,8 +43,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
-    environment:
-      API_PROXY_KEY: ${ADMIN_API_KEY}
+    env_file:
+      - .env
     ports:
       - "${FRONTEND_PORT:-3000}:80"
     healthcheck:
