@@ -68,6 +68,7 @@ def _release_scheduler_lock() -> None:
 
 def start_scheduler() -> None:
     from app.jobs.sync_patch_catalog_job import sync_patch_catalog
+    from app.jobs.sync_inventory_job import sync_all_active_sources
     from app.jobs.evaluate_updates_job import evaluate_all_updates
 
     if not settings.SCHEDULER_ENABLED:
@@ -80,6 +81,13 @@ def start_scheduler() -> None:
         return
 
     try:
+        scheduler.add_job(
+            sync_all_active_sources,
+            trigger=IntervalTrigger(minutes=settings.INVENTORY_SYNC_INTERVAL_MINUTES),
+            id="sync_inventory",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
         scheduler.add_job(
             sync_patch_catalog,
             trigger=IntervalTrigger(minutes=settings.PATCH_CATALOG_SYNC_INTERVAL_MINUTES),
