@@ -87,6 +87,7 @@ class SoftwareComplianceRule(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    profile_name: Mapped[str] = mapped_column(String(255), default="Default", index=True)
     rule_type: Mapped[str] = mapped_column(String(50))
     product_match_pattern: Mapped[str | None] = mapped_column(String(500))
     publisher_match_pattern: Mapped[str | None] = mapped_column(String(500))
@@ -106,10 +107,16 @@ class EndpointSoftwareFinding(Base):
     endpoint_id: Mapped[int] = mapped_column(ForeignKey("endpoints.id", ondelete="CASCADE"), index=True)
     snapshot_id: Mapped[int] = mapped_column(ForeignKey("endpoint_snapshots.id", ondelete="CASCADE"), index=True)
     software_product_id: Mapped[int | None] = mapped_column(ForeignKey("software_products.id"))
+    rule_id: Mapped[int | None] = mapped_column(ForeignKey("software_compliance_rules.id"))
+    profile_name: Mapped[str | None] = mapped_column(String(255), index=True)
+    rule_name: Mapped[str | None] = mapped_column(String(255))
     finding_type: Mapped[str] = mapped_column(String(100))
     severity: Mapped[str] = mapped_column(String(50), default="medium")
     status: Mapped[str] = mapped_column(String(50), default="open")
     details: Mapped[str | None] = mapped_column(Text)
+    software_name: Mapped[str | None] = mapped_column(String(500))
+    software_version: Mapped[str | None] = mapped_column(String(255))
+    minimum_version: Mapped[str | None] = mapped_column(String(100))
     detected_at: Mapped[date | None] = mapped_column(Date)
 
     endpoint: Mapped["Endpoint"] = relationship(back_populates="software_findings")  # noqa: F821

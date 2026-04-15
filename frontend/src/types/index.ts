@@ -128,6 +128,96 @@ export interface SoftwareListResponse {
   page_size: number;
 }
 
+export interface SoftwareVersionItem {
+  software_version?: string;
+  endpoint_count: number;
+}
+
+export interface SoftwareVersionListResponse {
+  items: SoftwareVersionItem[];
+  total: number;
+}
+
+export interface SoftwareEndpointInstallItem {
+  endpoint_id: number;
+  computer_name: string;
+  software_name?: string;
+  software_version?: string;
+  publisher?: string;
+  app_type?: string;
+  app_source?: string;
+}
+
+export interface SoftwareEndpointInstallListResponse {
+  items: SoftwareEndpointInstallItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface SoftwareCatalogItem {
+  normalized_name: string;
+  display_name: string;
+}
+
+export interface SoftwareAnalyticsItem {
+  label: string;
+  endpoint_count: number;
+}
+
+export interface SoftwareAnalyticsResponse {
+  top_software: SoftwareAnalyticsItem[];
+  top_publishers: SoftwareAnalyticsItem[];
+}
+
+export interface SoftwareComplianceRule {
+  id: number;
+  name: string;
+  profile_name: string;
+  rule_type: string;
+  minimum_version?: string;
+  is_required: boolean;
+  is_forbidden: boolean;
+  severity: string;
+  is_active: boolean;
+  product_match_pattern?: string;
+}
+
+export interface SoftwareComplianceProfileSummary {
+  profile_name: string;
+  list_type: "blacklist" | "compliance_list" | "mixed" | string;
+  total_endpoints: number;
+  compliant_endpoints: number;
+  non_compliant_endpoints: number;
+  forbidden_endpoints: number;
+  minimum_version_endpoints: number;
+}
+
+export interface SoftwareComplianceSummaryResponse {
+  items: SoftwareComplianceProfileSummary[];
+}
+
+export interface SoftwareComplianceEndpointFindingItem {
+  endpoint_id: number;
+  computer_name: string;
+  profile_name?: string;
+  finding_type: string;
+  severity: string;
+  rule_name?: string;
+  software_name?: string;
+  software_version?: string;
+  minimum_version?: string;
+  details?: string;
+  detected_at?: string;
+}
+
+export interface SoftwareComplianceEndpointFindingListResponse {
+  items: SoftwareComplianceEndpointFindingItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface UpdateStatusItem {
   endpoint_id: number;
   computer_name: string;

@@ -1,14 +1,16 @@
-import { NavLink } from "react-router-dom";
 import clsx from "clsx";
+import { NavLink } from "react-router-dom";
 
 const navItems = [
-  { to: "/", label: "Overview", icon: "📊" },
-  { to: "/endpoints", label: "Endpoints", icon: "💻" },
-  { to: "/software", label: "Software", icon: "📦" },
-  { to: "/updates", label: "Windows Updates", icon: "🔄" },
-  { to: "/patch-catalog", label: "Patch Catalog", icon: "📋" },
-  { to: "/sync", label: "Sync Jobs", icon: "⚙️" },
-  { to: "/settings", label: "Settings", icon: "🔧" },
+  { to: "/", label: "Overview", icon: "OV" },
+  { to: "/endpoints", label: "Endpoints", icon: "EP" },
+  { to: "/software", label: "Software", icon: "SW" },
+  { to: "/software-compliance", label: "Software Compliance", icon: "SC" },
+  { to: "/software-settings", label: "Software Settings", icon: "SS" },
+  { to: "/updates", label: "Windows Updates", icon: "UP" },
+  { to: "/patch-catalog", label: "Patch Catalog", icon: "PC" },
+  { to: "/sync", label: "Sync Jobs", icon: "SJ" },
+  { to: "/settings", label: "Settings", icon: "ST" },
 ];
 
 export default function Sidebar() {
@@ -26,13 +28,11 @@ export default function Sidebar() {
             className={({ isActive }) =>
               clsx(
                 "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-blue-600 text-white"
-                  : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                isActive ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-800 hover:text-white"
               )
             }
           >
-            <span>{item.icon}</span>
+            <span className="text-[10px] font-semibold w-5">{item.icon}</span>
             {item.label}
           </NavLink>
         ))}
@@ -40,3 +40,4 @@ export default function Sidebar() {
     </aside>
   );
 }
+

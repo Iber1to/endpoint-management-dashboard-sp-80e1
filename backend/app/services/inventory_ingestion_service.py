@@ -10,6 +10,7 @@ from app.services.software_parser_service import parse_software_json
 from app.services.software_normalization_service import (
     normalize_name, normalize_publisher, compute_dedupe_hash, classify_software
 )
+from app.services.compliance_service import evaluate_software_compliance
 from app.services import blob_storage_service as bss
 from app.core.security import decrypt_value
 from app.core.logging import logger
@@ -190,6 +191,7 @@ def ingest_software_file(db: Session, inv_file: InventoryFile, entries: list[dic
         db.add(sw)
 
     snapshot.software_file_id = inv_file.id
+    evaluate_software_compliance(db, snapshot)
     inv_file.status = "processed"
     inv_file.processed_at = datetime.now(timezone.utc)
     db.flush()
